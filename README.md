@@ -50,7 +50,7 @@
 
 ```bash
 # Clone the repo
-git clone https://github.com/datdm/pastee.git
+git clone https://github.com/jackeratarina/pastee.git
 cd pastee
 
 # Get dependencies
@@ -107,8 +107,6 @@ Pastee was created out of frustration with clunky clipboard managers. The goal i
 If you find Pastee useful, consider buying me a coffee:
 
 [![PayPal](https://img.shields.io/badge/PayPal-Donate-blue?logo=paypal)](https://paypal.me/duongmandat003)
-
-Or send directly to **duongmandat003@gmail.com** via PayPal.
 
 ## License
 
