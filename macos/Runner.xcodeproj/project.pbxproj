@@ -398,7 +398,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.pastee.pastee.RunnerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/pastee.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/pastee";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Pastee.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Pastee";
 			};
 			name = Debug;
 		};
@@ -412,7 +412,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.pastee.pastee.RunnerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/pastee.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/pastee";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Pastee.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Pastee";
 			};
 			name = Release;
 		};
@@ -426,7 +426,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.pastee.pastee.RunnerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/pastee.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/pastee";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Pastee.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Pastee";
 			};
 			name = Profile;
 		};

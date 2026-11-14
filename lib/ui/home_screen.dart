@@ -25,7 +25,6 @@ class HomeScreen extends ConsumerStatefulWidget {
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   /// Revealed secrets hide themselves again after this long.
   static const revealDuration = Duration(seconds: 20);
-  static const _maxUndo = 20;
 
   final ScrollController _scrollController = ScrollController();
   final FocusNode _searchFocusNode = FocusNode(debugLabel: 'search');
@@ -48,7 +47,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   /// Items whose hidden text is showing, each with its re-hide timer.
   final Map<String, Timer> _revealed = {};
-  final List<PasteItem> _undoStack = [];
 
   StreamSubscription<bool>? _summonSubscription;
   late final AppLifecycleListener _lifecycle;
@@ -70,6 +68,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         );
       }
     });
+    // Turning masking back on (here or in Settings) hides anything revealed.
+    ref.listenManual<bool>(settingsProvider.select((s) => s.maskSecrets),
+        (_, __) => _hideRevealed());
     WidgetsBinding.instance.addPostFrameCallback((_) => _showStorageNotices());
   }
 
@@ -174,6 +175,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   void _toggleRevealFirst() {
+    _flushSearch();
     final items = ref.read(filteredPasteListProvider);
     if (items.isEmpty) return;
     final item = items.first;
@@ -225,6 +227,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     });
   }
 
+  /// Applies a search that is still waiting for its debounce, so Enter or
+  /// ⌘1–9 pressed right after typing act on the item the user is looking for.
+  void _flushSearch() {
+    if (_debounce?.isActive ?? false) {
+      _debounce!.cancel();
+      ref.read(searchQueryProvider.notifier).state = _searchController.text;
+    }
+  }
+
   void _clearSearch() {
     _debounce?.cancel();
     _searchController.clear();
@@ -261,7 +272,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
     // Show the new item even if a search was hiding it.
     if (_searchController.text.isNotEmpty) _clearSearch();
-    await notifier.addFromClipboard(text);
+    try {
+      await notifier.addFromClipboard(text);
+    } catch (error) {
+      _showSnackBar('Couldn’t save the item: $error',
+          duration: const Duration(seconds: 6));
+      return;
+    }
     if (_scrollController.hasClients) {
       _scrollController.animateTo(0,
           duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
@@ -279,6 +296,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Future<void> _copyFirstItem() async {
+    _flushSearch();
     final items = ref.read(filteredPasteListProvider);
     if (items.isEmpty) return;
     await _copyItem(items.first);
@@ -296,7 +314,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     _triggerFlash(item.id, index);
     _restoreFocus();
     if (_isHidden(item, extraction)) {
-      _showSnackBar('Copied ${field.label}');
+      _showSnackBar(
+          'Copied ${item.sensitive ? safeFieldLabel(field) : field.label}');
     } else {
       final preview = truncateGraphemes(
           sanitizeUtf16(field.value.replaceAll('\n', ' ')), 30);
@@ -306,12 +325,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Future<void> _copyFieldOfFirst(int index) async {
+    _flushSearch();
     final items = ref.read(filteredPasteListProvider);
     if (items.isEmpty) return;
     await _copyField(items.first, index);
   }
 
   Future<void> _cutFirstItem() async {
+    _flushSearch();
     final items = ref.read(filteredPasteListProvider);
     if (items.isEmpty) return;
     final item = items.first;
@@ -320,6 +341,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Future<void> _deleteFirstItem() async {
+    _flushSearch();
     final items = ref.read(filteredPasteListProvider);
     if (items.isEmpty) return;
     await _deleteItem(items.first);
@@ -327,12 +349,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   Future<void> _deleteItem(PasteItem item,
       {String message = 'Item deleted'}) async {
-    final removed =
-        await ref.read(pasteListProvider.notifier).deleteItem(item.id);
+    final PasteItem? removed;
+    try {
+      removed = await ref.read(pasteListProvider.notifier).deleteItem(item.id);
+    } catch (error) {
+      _showSnackBar('Couldn’t delete the item: $error',
+          duration: const Duration(seconds: 6));
+      return;
+    }
     if (removed == null || !mounted) return;
     _revealed.remove(item.id)?.cancel();
-    _undoStack.add(removed);
-    if (_undoStack.length > _maxUndo) _undoStack.removeAt(0);
     _restoreFocus();
     _showSnackBar(
       message,
@@ -342,13 +368,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Future<void> _undo() async {
-    if (_undoStack.isEmpty) {
+    final item = await ref.read(pasteListProvider.notifier).undoDelete();
+    if (!mounted) return;
+    if (item == null) {
       _showSnackBar('Nothing to undo');
       return;
     }
-    final item = _undoStack.removeLast();
-    await ref.read(pasteListProvider.notifier).restore(item);
-    if (!mounted) return;
     _triggerFlash(item.id);
     _restoreFocus();
     final title =
@@ -357,6 +382,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   void _editFirstTitle() {
+    _flushSearch();
     if (ref.read(filteredPasteListProvider).isEmpty) return;
     setState(() => _editGeneration++);
   }
@@ -380,9 +406,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     if (!mounted) return;
     final report = ref.read(storageReportProvider);
     if (report.unreadableBackup != null) {
+      final keyNote = report.unreadableKeyBackup == null
+          ? ''
+          : ' and the old key at ${report.unreadableKeyBackup}';
       _showSnackBar(
         'Saved items could not be unlocked, so Pastee started a new list. '
-        'The old file was kept at ${report.unreadableBackup}.',
+        'The old items were kept at ${report.unreadableBackup}$keyNote.',
         duration: const Duration(seconds: 12),
       );
     } else if (report.migratedCount > 0) {

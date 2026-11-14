@@ -9,6 +9,7 @@ import '../model/hotkey.dart';
 import '../model/paste_item.dart';
 import '../services/clipboard_service.dart';
 import '../services/desktop_bridge.dart';
+import '../services/field_extractor.dart';
 import '../services/paste_titles.dart';
 import '../services/storage_service.dart';
 
@@ -176,6 +177,14 @@ class PasteListNotifier extends StateNotifier<List<PasteItem>> {
 
   final PasteStore _store;
   static const _uuid = Uuid();
+  static const _maxUndo = 20;
+
+  /// Recently deleted items, newest last, for undo. Cleared by [clearAll].
+  final List<PasteItem> _deleted = [];
+
+  /// Contents being saved right now, so a quick double paste can't add the
+  /// same text twice while the first write is still in flight.
+  final Set<String> _adding = {};
 
   PasteItem? findByContent(String text) {
     for (final item in state) {
@@ -185,17 +194,39 @@ class PasteListNotifier extends StateNotifier<List<PasteItem>> {
   }
 
   /// Saves [text] as a new item, or returns null if it's already in the list.
+  ///
+  /// Text that is exactly a secret from another item (you copied a password
+  /// from Pastee and pasted it back) is saved as an "always hide" item, since
+  /// on its own it may not look like a password.
   Future<PasteItem?> addFromClipboard(String text) async {
-    if (findByContent(text) != null) return null;
-    final item = PasteItem(
-      id: _uuid.v4(),
-      title: autoTitle(text),
-      content: text,
-      createdAt: DateTime.now(),
-    );
-    state = [item, ...state];
-    await _store.put(item);
-    return item;
+    if (findByContent(text) != null || !_adding.add(text)) return null;
+    try {
+      final item = PasteItem(
+        id: _uuid.v4(),
+        title: autoTitle(text),
+        content: text,
+        createdAt: DateTime.now(),
+        sensitive: _isKnownSecret(text),
+      );
+      // Disk first: if the write fails, the list doesn't show an item that
+      // would be gone after a restart.
+      await _store.put(item);
+      state = [item, ...state];
+      return item;
+    } finally {
+      _adding.remove(text);
+    }
+  }
+
+  bool _isKnownSecret(String text) {
+    final value = text.trim();
+    if (value.isEmpty) return false;
+    for (final item in state) {
+      if (FieldExtractor.extract(item.content).secretValues.contains(value)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   Future<void> updateTitle(String id, String newTitle) =>
@@ -205,33 +236,44 @@ class PasteListNotifier extends StateNotifier<List<PasteItem>> {
       _update(id, (item) => item.copyWith(sensitive: sensitive));
 
   Future<void> _update(String id, PasteItem Function(PasteItem) change) async {
-    final index = state.indexWhere((item) => item.id == id);
-    if (index == -1) return;
-    final updated = change(state[index]);
-    state = [...state.sublist(0, index), updated, ...state.sublist(index + 1)];
+    final current = state.where((item) => item.id == id).firstOrNull;
+    if (current == null) return;
+    final updated = change(current);
     await _store.put(updated);
+    state = [
+      for (final item in state) item.id == id ? updated : item,
+    ];
   }
 
-  /// Removes the item and returns it, so it can be restored with [restore].
+  /// Removes the item. It can be brought back with [undoDelete].
   Future<PasteItem?> deleteItem(String id) async {
-    final index = state.indexWhere((item) => item.id == id);
-    if (index == -1) return null;
-    final removed = state[index];
-    state = [...state.sublist(0, index), ...state.sublist(index + 1)];
+    final removed = state.where((item) => item.id == id).firstOrNull;
+    if (removed == null) return null;
     await _store.delete(id);
+    state = state.where((item) => item.id != id).toList();
+    _deleted.add(removed);
+    if (_deleted.length > _maxUndo) _deleted.removeAt(0);
     return removed;
   }
 
-  /// Puts a deleted item back where it was (the list is ordered by date).
-  Future<void> restore(PasteItem item) async {
-    if (state.any((existing) => existing.id == item.id)) return;
+  bool get canUndo => _deleted.isNotEmpty;
+
+  /// Puts the most recently deleted item back where it was (the list is
+  /// ordered by date). Returns it, or null if there is nothing to undo.
+  Future<PasteItem?> undoDelete() async {
+    if (_deleted.isEmpty) return null;
+    final item = _deleted.removeLast();
+    if (state.any((existing) => existing.id == item.id)) return item;
+    await _store.put(item);
     state = [...state, item]
       ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    await _store.put(item);
+    return item;
   }
 
+  /// Deletes everything. This can't be undone, so the undo history goes too.
   Future<void> clearAll() async {
-    state = [];
+    _deleted.clear();
     await _store.clear();
+    state = [];
   }
 }

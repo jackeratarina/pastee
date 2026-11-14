@@ -350,4 +350,85 @@ void main() {
       expect(fieldsOf('   \n\t '), isEmpty);
     });
   });
+  group('review fixes: detection', () {
+    test('URL passwords containing @ # ? and an empty username', () {
+      const tricky = 'postgres://admin:P@ss#123@db.example.com:5432/app';
+      expect(fieldWith(tricky, 'P@ss#123'),
+          isField(FieldKind.password, secret: true));
+      expect(fieldWith('redis://:Sup3rSecret@cache:6379', 'Sup3rSecret'),
+          isField(FieldKind.password, secret: true));
+    });
+
+    test('a secret written twice is masked both times', () {
+      const text = 'Card: 4242 4242 4242 4242\nConfirm: 4242 4242 4242 4242\n'
+          'PIN: 4821\nRe-enter PIN: 4821';
+      final extraction = FieldExtractor.extract(text);
+      for (final occurrence in ['4242 4242 4242 4242', '4821']) {
+        var from = 0;
+        while (true) {
+          final at = text.indexOf(occurrence, from);
+          if (at < 0) break;
+          expect(
+              extraction.secretSpans
+                  .any((s) => s.start <= at && at + occurrence.length <= s.end),
+              isTrue,
+              reason: '"$occurrence" at $at should be masked');
+          from = at + occurrence.length;
+        }
+      }
+    });
+
+    test('more ways of writing a password', () {
+      final cases = {
+        '{"password": "abc12345"}': 'abc12345',
+        'Password for my email account: s3cret!': 's3cret!',
+        'Mật khẩu tài khoản ngân hàng: Ab123456': 'Ab123456',
+        'Password 2: hunter22': 'hunter22',
+        'Secret: hunter2': 'hunter2',
+        'pass - abc12345': 'abc12345',
+        'mk wifi: khongcho1': 'khongcho1',
+        'password for wifi is Summer2024!': 'Summer2024!',
+        'Server=db;User Id=sa;Password=abc123;Database=prod': 'abc123',
+        'Wifi (pass: abc12345)': 'abc12345',
+      };
+      cases.forEach((text, secret) {
+        expect(fieldWith(text, secret)?.secret, isTrue, reason: text);
+      });
+    });
+
+    test('a passphrase keeps all its words', () {
+      expect(
+          fieldWith('Passphrase: correct horse battery staple',
+              'correct horse battery staple'),
+          isField(FieldKind.password, secret: true));
+    });
+
+    test('ordinary sentences still are not passwords', () {
+      for (final text in [
+        'The password you entered is incorrect.',
+        'Please pass the salt',
+        'Secret: see below',
+      ]) {
+        expect(fieldsOf(text).where((f) => f.secret), isEmpty, reason: text);
+      }
+    });
+  });
+
+  group('review fixes: no slow patterns', () {
+    final inputs = {
+      'key: value + spaces': 'k: v${' ' * 19990}x',
+      'password + spaces': 'password: x${' ' * 19985}y',
+      'repeated pin': 'pin 1 ' * 3300,
+      'repeated tel': 'tel 0 ' * 3300,
+      'url + brackets': 'https://x.com/${')' * 19980}',
+      'jwt fragments': '-eyJ' * 5000,
+    };
+    inputs.forEach((name, text) {
+      test(name, () {
+        final watch = Stopwatch()..start();
+        FieldExtractor.extract(text);
+        expect(watch.elapsedMilliseconds, lessThan(1500), reason: name);
+      });
+    });
+  });
 }

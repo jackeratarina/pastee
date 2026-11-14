@@ -9,6 +9,14 @@ import '../services/text_utils.dart';
 import 'shortcut_labels.dart';
 import 'theme.dart';
 
+/// A label that never quotes the note: the key of a `Key: value` line is
+/// replaced by a generic name.
+String safeFieldLabel(ExtractedField field) => switch (field.kind) {
+      FieldKind.labeled || FieldKind.line => 'Field',
+      FieldKind.password => 'Password',
+      _ => field.label,
+    };
+
 IconData iconForField(FieldKind kind) => switch (kind) {
       FieldKind.password => Icons.key_outlined,
       FieldKind.token => Icons.vpn_key_outlined,
@@ -91,13 +99,15 @@ class _PasteTileState extends State<PasteTile>
   late final Animation<double> _flashOpacity =
       Tween<double>(begin: 0.5, end: 0.0).animate(
           CurvedAnimation(parent: _flashController, curve: Curves.easeOut));
-  late int _lastFlashGeneration = widget.flashGeneration;
-  late int _lastEditGeneration = widget.editGeneration;
+  late int _lastFlashGeneration;
+  late int _lastEditGeneration;
   int _activeFlashField = -1;
 
   @override
   void initState() {
     super.initState();
+    _lastFlashGeneration = widget.flashGeneration;
+    _lastEditGeneration = widget.editGeneration;
     _titleFocusNode.addListener(_onTitleFocusChanged);
   }
 
@@ -116,7 +126,10 @@ class _PasteTileState extends State<PasteTile>
     if (widget.editGeneration != 0 &&
         widget.editGeneration != _lastEditGeneration) {
       _lastEditGeneration = widget.editGeneration;
-      _startEditing();
+      // _startEditing tells the parent, which must not rebuild mid-build.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _startEditing();
+      });
     }
   }
 
@@ -140,7 +153,9 @@ class _PasteTileState extends State<PasteTile>
   }
 
   void _startEditing() {
-    _titleController.text = widget.item.title;
+    // Never put a hidden item's real title (which can hold the secret, or be
+    // the first line of an "always hide" item) into the text field.
+    _titleController.text = widget.hidden ? '' : widget.item.title;
     setState(() => _isEditingTitle = true);
     widget.onEditingChanged?.call(true);
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -285,6 +300,9 @@ class _PasteTileState extends State<PasteTile>
             focusNode: _titleFocusNode,
             style: style,
             decoration: InputDecoration(
+              hintText: widget.hidden
+                  ? displayTitle(widget.item, widget.extraction, hidden: true)
+                  : null,
               isDense: true,
               contentPadding:
                   const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
@@ -465,18 +483,25 @@ class _PasteTileState extends State<PasteTile>
   bool _chipMasked(ExtractedField field, bool hidden) =>
       hidden && (field.secret || widget.item.sensitive);
 
+  /// For an "always hide" item the label of a `Key: value` line is part of
+  /// the hidden text, so it is not shown.
+  String _label(ExtractedField field, bool hidden) =>
+      hidden && widget.item.sensitive ? safeFieldLabel(field) : field.label;
+
   String _chipText(ExtractedField field, bool hidden) {
     if (_chipMasked(field, hidden)) {
       return field.kind == FieldKind.card
-          ? '${field.label} ${Masker.hiddenFieldText(field)}'
-          : '${field.label} ••••';
+          ? '${_label(field, hidden)} ${Masker.hiddenFieldText(field)}'
+          : '${_label(field, hidden)} ••••';
     }
     return truncateGraphemes(_visibleValue(field, hidden), 24);
   }
 
   String _chipTooltip(ExtractedField field, int index, bool hidden) {
     final keys = primaryShortcut('${index + 1}');
-    if (_chipMasked(field, hidden)) return '$keys  ${field.label} (hidden)';
+    if (_chipMasked(field, hidden)) {
+      return '$keys  ${_label(field, hidden)} (hidden)';
+    }
     return '$keys  ${field.label}: ${truncateGraphemes(_visibleValue(field, hidden), 80)}';
   }
 

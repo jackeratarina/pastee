@@ -103,6 +103,7 @@ class StorageReport {
     this.encrypted = false,
     this.migratedCount = 0,
     this.unreadableBackup,
+    this.unreadableKeyBackup,
   });
 
   final String? dataPath;
@@ -114,6 +115,10 @@ class StorageReport {
   /// Saved items that could not be decrypted (their key was lost) are moved
   /// here instead of being deleted.
   final String? unreadableBackup;
+
+  /// A key file that could not be read is kept here, so the items above can
+  /// still be recovered if it becomes readable again.
+  final String? unreadableKeyBackup;
 }
 
 class OpenedStorage {
@@ -134,19 +139,15 @@ class Storage {
   /// OneDrive syncs on many Windows PCs).
   static const legacyBox = 'paste_items';
 
-  /// Opens storage in the platform's application-support folder.
+  /// Opens storage in the platform's application-support folder:
+  /// `~/Library/Application Support/com.pastee.pastee/data` on macOS,
+  /// `%APPDATA%\\com.pastee\\Pastee\\data` on Windows.
   static Future<OpenedStorage> openDefault() async {
     final support = await getApplicationSupportDirectory();
     final dataDir = Directory(p.join(support.path, 'data'));
-    Directory? legacyDir;
-    try {
-      legacyDir = await getApplicationDocumentsDirectory();
-    } catch (_) {
-      legacyDir = null;
-    }
     return open(
       dataDir: dataDir,
-      legacyDir: legacyDir,
+      legacyDir: await _legacyDir(),
       keyStore: FileKeyStore(
         File(p.join(dataDir.path, 'key.bin')),
         protector: Platform.isWindows
@@ -154,6 +155,27 @@ class Storage {
             : const PlainKeyProtector(),
       ),
     );
+  }
+
+  /// The Documents folder Pastee 1.0 saw, where it kept its unencrypted box.
+  ///
+  /// On Windows that is the user's Documents. Pastee 1.0 ran sandboxed on
+  /// macOS, so there it is Documents inside the old app container. (Pastee 1.1
+  /// isn't sandboxed, and looking in the real ~/Documents would make macOS
+  /// show every user a privacy prompt.)
+  static Future<Directory?> _legacyDir() async {
+    try {
+      if (Platform.isMacOS) {
+        final home = Platform.environment['HOME'];
+        if (home == null) return null;
+        return Directory(p.join(home, 'Library', 'Containers',
+            'com.pastee.pastee', 'Data', 'Documents'));
+      }
+      if (Platform.isWindows) return await getApplicationDocumentsDirectory();
+    } catch (_) {
+      // No legacy folder to look at.
+    }
+    return null;
   }
 
   static Future<OpenedStorage> open({
@@ -177,16 +199,39 @@ class Storage {
     // truncating the file to nothing. So check the key first, and if it
     // doesn't match, move the file aside instead of letting Hive wipe it.
     String? unreadableBackup;
+    int? stored;
+    File? safetyCopy;
+    var sizeBefore = 0;
     if (await boxFile.exists()) {
-      final stored = await crcFile.exists()
+      stored = await crcFile.exists()
           ? int.tryParse((await crcFile.readAsString()).trim())
           : null;
-      if (stored != keyCrc) unreadableBackup = await _moveAside(boxFile);
+      if (stored == null) {
+        // Fingerprint missing or torn (crash while it was written): the key
+        // may well be right. Keep a copy in case Hive "recovers" the file.
+        sizeBefore = await boxFile.length();
+        safetyCopy = await boxFile.copy(_asideName(boxFile));
+      } else if (stored != keyCrc) {
+        unreadableBackup = await _moveAside(boxFile);
+      }
     }
 
     final box =
         await Hive.openBox<PasteItem>(pastesBox, encryptionCipher: cipher);
-    await crcFile.writeAsString('$keyCrc', flush: true);
+    if (safetyCopy != null) {
+      if (await boxFile.length() < sizeBefore && box.isEmpty) {
+        unreadableBackup = safetyCopy.path; // the key really was wrong
+      } else {
+        await safetyCopy.delete();
+      }
+    }
+    if (stored != keyCrc) {
+      // Only when it changed, and atomically: a torn fingerprint file must
+      // never make good data look unreadable.
+      final tmp = File('${crcFile.path}.tmp');
+      await tmp.writeAsString('$keyCrc', flush: true);
+      await tmp.rename(crcFile.path);
+    }
 
     var migrated = 0;
     if (legacyDir != null) migrated = await _migrateLegacy(box, legacyDir);
@@ -200,15 +245,19 @@ class Storage {
         encrypted: true,
         migratedCount: migrated,
         unreadableBackup: unreadableBackup,
+        unreadableKeyBackup: key.unreadableBackup,
       ),
     );
   }
 
-  static Future<String> _moveAside(File boxFile) async {
+  static String _asideName(File boxFile) {
     final stamp =
         DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
-    final target =
-        p.join(boxFile.parent.path, '$pastesBox-unreadable-$stamp.hive');
+    return p.join(boxFile.parent.path, '$pastesBox-unreadable-$stamp.hive');
+  }
+
+  static Future<String> _moveAside(File boxFile) async {
+    final target = _asideName(boxFile);
     await boxFile.rename(target);
     final lock = File(p.setExtension(boxFile.path, '.lock'));
     if (await lock.exists()) await lock.delete();
