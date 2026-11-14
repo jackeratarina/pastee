@@ -71,6 +71,17 @@ jobs:
           flutter build macos --release
           --build-name "$VERSION" --build-number "$GITHUB_RUN_NUMBER"
           --dart-define=PASTEE_VERSION="$VERSION"
+      - name: Re-sign without debugger access
+        run: |
+          # Xcode's ad-hoc signing adds get-task-allow, which lets debuggers
+          # attach and read the app's memory. Pastee holds passwords, so the
+          # release is re-signed with only the entitlements it needs.
+          APP=build/macos/Build/Products/Release/Pastee.app
+          codesign --force --sign - --entitlements macos/Runner/Release.entitlements "$APP"
+          if codesign -d --entitlements - "$APP" 2>/dev/null | grep -q get-task-allow; then
+            echo "::error::get-task-allow is still present"
+            exit 1
+          fi
       - name: Check the app bundle
         run: |
           APP=build/macos/Build/Products/Release/Pastee.app
@@ -130,6 +141,12 @@ jobs:
         run: |
           $release = "build\windows\x64\runner\Release"
           if (-not (Test-Path "$release\pastee.exe")) { throw "pastee.exe was not built" }
+          # pastee.exe and the local_auth plugin link against the Visual C++
+          # runtime. Ship it next to the exe so Pastee also starts on PCs without
+          # the redistributable installed (app-local deployment).
+          foreach ($dll in 'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll') {
+            Copy-Item "$env:SystemRoot\System32\$dll" $release
+          }
           New-Item -ItemType Directory -Force dist | Out-Null
           Compress-Archive -Path "$release\*" -DestinationPath "dist\Pastee-$env:VERSION-windows-x64.zip"
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
