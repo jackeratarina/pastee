@@ -36,8 +36,10 @@ class PasteeApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final themeMode = ref.watch(settingsProvider.select((s) => s.themeMode));
-    // Registers the summon shortcut as soon as the app starts.
+    // Registers the summon shortcut and starts following it as soon as the
+    // app starts, whether or not it is locked.
     ref.watch(hotKeyProvider);
+    ref.watch(windowControllerProvider);
 
     return MaterialApp(
       title: 'Pastee',

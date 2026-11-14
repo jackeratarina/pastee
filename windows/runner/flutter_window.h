@@ -33,6 +33,8 @@ class FlutterWindow : public Win32Window {
   bool IsWindowActive();
   void ShowAndFocus();
   void HideWindow();
+  void StartHideFallback();
+  void CancelHideFallback();
   void UnregisterSummonHotKey();
 
   // The project to run.
@@ -44,6 +46,9 @@ class FlutterWindow : public Win32Window {
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
       native_channel_;
   bool hotkey_registered_ = false;
+
+  // Set while a shortcut hide is waiting for Dart (the fallback timer runs).
+  bool hide_pending_ = false;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

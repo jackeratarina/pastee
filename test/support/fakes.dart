@@ -36,6 +36,9 @@ class FakeBridge implements DesktopBridge {
   int unregisterCalls = 0;
   int showCalls = 0;
   int hideCalls = 0;
+
+  /// Called when Dart asks the native side to hide the window.
+  void Function()? onHide;
   final _summons = StreamController<bool>.broadcast();
 
   /// Pretend the native side handled the summon shortcut.
@@ -61,7 +64,10 @@ class FakeBridge implements DesktopBridge {
   Future<void> showWindow() async => showCalls++;
 
   @override
-  Future<void> hideWindow() async => hideCalls++;
+  Future<void> hideWindow() async {
+    hideCalls++;
+    onHide?.call();
+  }
 }
 
 class FakeAuthenticator implements DeviceAuthenticator {

@@ -14,6 +14,11 @@ namespace {
 // Any id in 0x0000-0xBFFF identifies an application hotkey.
 constexpr int kSummonHotKeyId = 0x5053;
 
+// How long a shortcut hide waits for Dart to call hideWindow before minimizing
+// anyway. Timer ids only need to be unique per window.
+constexpr UINT kHideFallbackMs = 500;
+constexpr UINT_PTR kHideFallbackTimerId = 1;
+
 // Smallest window the layout is designed for, in logical pixels.
 constexpr int kMinWidth = 420;
 constexpr int kMinHeight = 440;
@@ -147,6 +152,7 @@ bool FlutterWindow::IsWindowActive() {
 }
 
 void FlutterWindow::ShowAndFocus() {
+  CancelHideFallback();
   HWND hwnd = GetHandle();
   if (hwnd == nullptr) {
     return;
@@ -161,9 +167,31 @@ void FlutterWindow::ShowAndFocus() {
 // Minimizing (rather than hiding) keeps Pastee on the taskbar and hands focus
 // back to the window you were in, so the next Ctrl+V lands there.
 void FlutterWindow::HideWindow() {
+  CancelHideFallback();
   HWND hwnd = GetHandle();
   if (hwnd != nullptr) {
     ::ShowWindow(hwnd, SW_MINIMIZE);
+  }
+}
+
+// The taskbar and Alt+Tab keep showing a minimized window's last frame, so a
+// shortcut hide leaves the window up for Dart to draw its lock or privacy
+// cover; Dart then calls hideWindow. If it hasn't within kHideFallbackMs, the
+// timer minimizes the window anyway so the shortcut never feels broken.
+void FlutterWindow::StartHideFallback() {
+  if (::SetTimer(GetHandle(), kHideFallbackTimerId, kHideFallbackMs,
+                 nullptr) != 0) {
+    hide_pending_ = true;
+  } else {
+    // Without the timer there is no fallback: minimize right away.
+    HideWindow();
+  }
+}
+
+void FlutterWindow::CancelHideFallback() {
+  if (hide_pending_) {
+    ::KillTimer(GetHandle(), kHideFallbackTimerId);
+    hide_pending_ = false;
   }
 }
 
@@ -187,16 +215,23 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       break;
     case WM_DESTROY:
       // Win32Window clears the window handle before OnDestroy runs, so the
-      // hotkey has to be released here while GetHandle() is still valid.
+      // hotkey and the hide timer have to be released here while GetHandle()
+      // is still valid.
       UnregisterSummonHotKey();
+      CancelHideFallback();
       break;
     case WM_HOTKEY:
       if (static_cast<int>(wparam) == kSummonHotKeyId) {
+        if (hide_pending_) {
+          // Pressed again while waiting for Dart: minimize right away.
+          HideWindow();
+          return 0;
+        }
         const bool show = !IsWindowActive();
         if (show) {
           ShowAndFocus();
         } else {
-          HideWindow();
+          StartHideFallback();
         }
         if (native_channel_) {
           native_channel_->InvokeMethod(
@@ -204,6 +239,16 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               flutter::EncodableMap{
                                   {flutter::EncodableValue("shown"),
                                    flutter::EncodableValue(show)}}));
+        }
+        return 0;
+      }
+      break;
+    case WM_TIMER:
+      if (static_cast<UINT_PTR>(wparam) == kHideFallbackTimerId) {
+        // Dart didn't call hideWindow in time. A WM_TIMER still queued after
+        // the fallback was cancelled finds nothing pending and is ignored.
+        if (hide_pending_) {
+          HideWindow();
         }
         return 0;
       }

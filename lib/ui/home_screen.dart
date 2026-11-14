@@ -48,7 +48,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   /// Items whose hidden text is showing, each with its re-hide timer.
   final Map<String, Timer> _revealed = {};
 
-  StreamSubscription<bool>? _summonSubscription;
   late final AppLifecycleListener _lifecycle;
   AppLifecycleState? _lastLifecycleState;
   bool _settingsOpen = false;
@@ -56,9 +55,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    _summonSubscription =
-        ref.read(desktopBridgeProvider).summonEvents.listen(_onSummon);
     _lifecycle = AppLifecycleListener(onStateChange: _onLifecycleChanged);
+    ref.listenManual<bool>(summonedProvider, (previous, summoned) {
+      if (summoned && previous != true) _onSummoned();
+      if (!summoned) _hideRevealed();
+    });
     ref.listenManual<HotKeyStatus>(hotKeyProvider, (previous, next) {
       if (next.error != null && next.error != previous?.error) {
         _showSnackBar(
@@ -76,7 +77,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   @override
   void dispose() {
-    _summonSubscription?.cancel();
     _lifecycle.dispose();
     _scrollController.dispose();
     _searchFocusNode.dispose();
@@ -93,17 +93,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   // ── summoning, focus and visibility ──────────────────────
 
-  void _onSummon(bool shown) {
+  void _onSummoned() {
     if (!mounted) return;
-    ref.read(summonedProvider.notifier).state = shown;
-    if (shown) {
-      if (!_searchFocusNode.hasFocus && !_isTitleEditing) {
-        _listFocusNode.requestFocus();
-      }
-      if (_scrollController.hasClients) _scrollController.jumpTo(0);
-    } else {
-      _hideRevealed();
+    if (!_searchFocusNode.hasFocus && !_isTitleEditing) {
+      _listFocusNode.requestFocus();
     }
+    if (_scrollController.hasClients) _scrollController.jumpTo(0);
   }
 
   void _onLifecycleChanged(AppLifecycleState state) {
@@ -111,16 +106,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     _lastLifecycleState = state;
     final lostFocus = previous == AppLifecycleState.resumed &&
         state == AppLifecycleState.inactive;
-    if (state == AppLifecycleState.hidden || lostFocus) {
-      ref.read(summonedProvider.notifier).state = false;
-      _hideRevealed();
-    }
+    if (state == AppLifecycleState.hidden || lostFocus) _hideRevealed();
   }
 
   void _hideWindow() {
-    ref.read(summonedProvider.notifier).state = false;
     _hideRevealed();
-    ref.read(desktopBridgeProvider).hideWindow();
+    ref.read(windowControllerProvider).hide();
   }
 
   /// After copying from a summoned Pastee, get out of the way so the next
@@ -415,7 +406,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   void _showStorageNotices() {
-    if (!mounted) return;
+    if (!mounted || ref.read(storageNoticeShownProvider)) return;
+    ref.read(storageNoticeShownProvider.notifier).state = true;
     final report = ref.read(storageReportProvider);
     if (report.unreadableBackup != null) {
       final keyNote = report.unreadableKeyBackup == null

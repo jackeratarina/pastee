@@ -8,6 +8,12 @@ class MainFlutterWindow: NSWindow {
   private var nativeChannel: FlutterMethodChannel?
   private let summonHotKey = GlobalHotKey()
 
+  /// How long a shortcut hide waits for Dart to call hideWindow before hiding
+  /// anyway.
+  private static let hideFallbackDelay: TimeInterval = 0.5
+  /// Set while a shortcut hide is waiting for Dart (see toggleFromHotKey).
+  private var hideFallbackTimer: Timer?
+
   override func awakeFromNib() {
     let flutterViewController = FlutterViewController()
     let windowFrame = self.frame
@@ -40,24 +46,53 @@ class MainFlutterWindow: NSWindow {
   /// The close button and ⌘W hide Pastee instead of quitting, so the summon
   /// shortcut keeps working. ⌘Q still quits.
   override func performClose(_ sender: Any?) {
-    NSApp.hide(nil)
+    hideApp()
   }
 
   private var isFrontmost: Bool {
     return NSApp.isActive && !NSApp.isHidden && self.isVisible && self.isKeyWindow
   }
 
+  /// When the shortcut hides Pastee, Dart first draws its lock or privacy
+  /// cover, so the system's snapshots of the window (Dock, Exposé) don't show
+  /// the list, and then calls hideWindow. If it hasn't within
+  /// hideFallbackDelay, Pastee hides anyway so the shortcut never feels broken.
   private func toggleFromHotKey() {
+    if hideFallbackTimer != nil {
+      // Pressed again while waiting for Dart: hide right away.
+      hideApp()
+      return
+    }
     let show = !isFrontmost
     if show {
       showApp()
     } else {
-      hideApp()
+      startHideFallback()
     }
     nativeChannel?.invokeMethod("onHotKey", arguments: ["shown": show])
   }
 
+  private func startHideFallback() {
+    cancelHideFallback()
+    let timer = Timer(
+      timeInterval: MainFlutterWindow.hideFallbackDelay, target: self,
+      selector: #selector(hideFallbackFired(_:)), userInfo: nil, repeats: false)
+    // The common modes keep it firing during menu tracking and live resize.
+    RunLoop.main.add(timer, forMode: .common)
+    hideFallbackTimer = timer
+  }
+
+  private func cancelHideFallback() {
+    hideFallbackTimer?.invalidate()
+    hideFallbackTimer = nil
+  }
+
+  @objc private func hideFallbackFired(_ timer: Timer) {
+    hideApp()
+  }
+
   private func showApp() {
+    cancelHideFallback()
     NSApp.unhide(nil)
     if self.isMiniaturized {
       self.deminiaturize(nil)
@@ -69,6 +104,7 @@ class MainFlutterWindow: NSWindow {
   /// Hiding the whole app (rather than ordering the window out) hands focus
   /// back to the app you were in, so the next ⌘V lands there.
   private func hideApp() {
+    cancelHideFallback()
     NSApp.hide(nil)
   }
 
