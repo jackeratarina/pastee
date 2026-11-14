@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -21,30 +22,70 @@ class LockGate extends ConsumerStatefulWidget {
 
 class _LockGateState extends ConsumerState<LockGate> {
   late final AppLifecycleListener _lifecycle;
+  AppLifecycleState? _lastState;
+  DateTime _lastActivity = DateTime.fromMillisecondsSinceEpoch(0);
 
   @override
   void initState() {
     super.initState();
     _lifecycle = AppLifecycleListener(onStateChange: _onLifecycleChanged);
+    HardwareKeyboard.instance.addHandler(_onKey);
+    // App Lock assumes Pastee starts in front; tell it if it doesn't.
+    final state = WidgetsBinding.instance.lifecycleState;
+    if (state != null && state != AppLifecycleState.resumed) {
+      _lastState = state;
+      ref
+          .read(appLockProvider.notifier)
+          .wentAway(hidden: state != AppLifecycleState.inactive);
+    }
   }
 
   @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_onKey);
     _lifecycle.dispose();
     super.dispose();
   }
 
+  bool _onKey(KeyEvent event) {
+    _activity();
+    return false; // only watching, never handling
+  }
+
+  /// Any input while unlocked restarts App Lock's idle countdown.
+  void _activity() {
+    final now = DateTime.now();
+    if (now.difference(_lastActivity) < const Duration(seconds: 1)) return;
+    _lastActivity = now;
+    ref.read(appLockProvider.notifier).userActive();
+  }
+
   void _onLifecycleChanged(AppLifecycleState state) {
+    final previous = _lastState;
+    _lastState = state;
     final lock = ref.read(appLockProvider.notifier);
     switch (state) {
       case AppLifecycleState.resumed:
         lock.cameBack();
+        ref.read(windowControllerProvider).cameToFront();
       case AppLifecycleState.inactive:
         lock.wentAway(hidden: false);
       case AppLifecycleState.hidden ||
             AppLifecycleState.paused ||
             AppLifecycleState.detached:
         lock.wentAway(hidden: true);
+        // Hidden some other way (minimize button, ⌘H, closing on macOS):
+        // cover the items in case the OS takes a fresh snapshot.
+        if (ref.read(appLockProvider).enabled) {
+          ref.read(privacyCoverProvider.notifier).state = true;
+          SchedulerBinding.instance.scheduleForcedFrame();
+        }
+    }
+    // A summoned Pastee stops being "summoned" once you leave it.
+    final lostFocus = previous == AppLifecycleState.resumed &&
+        state == AppLifecycleState.inactive;
+    if (state == AppLifecycleState.hidden || lostFocus) {
+      ref.read(summonedProvider.notifier).state = false;
     }
   }
 
@@ -53,13 +94,56 @@ class _LockGateState extends ConsumerState<LockGate> {
     ref.listen<bool>(appLockProvider.select((s) => s.locked),
         (wasLocked, locked) {
       if (locked && wasLocked == false) {
-        // Dialogs and snackbars sit above the items; close them too.
+        // Dialogs and snackbars sit above the items; close them now, without
+        // an exit animation that would keep them on screen a moment longer.
         Navigator.of(context).popUntil((route) => route.isFirst);
-        ScaffoldMessenger.of(context).clearSnackBars();
+        ScaffoldMessenger.of(context)
+          ..clearSnackBars()
+          ..removeCurrentSnackBar();
+        ref.read(searchQueryProvider.notifier).state = '';
+        // Locked while hidden: draw the lock screen anyway, so that's what a
+        // window snapshot shows.
+        if (WidgetsBinding.instance.lifecycleState !=
+            AppLifecycleState.resumed) {
+          SchedulerBinding.instance.scheduleForcedFrame();
+        }
       }
     });
     final locked = ref.watch(appLockProvider.select((s) => s.locked));
-    return locked ? const LockScreen() : widget.child;
+    if (locked) return const LockScreen();
+    final covered = ref.watch(privacyCoverProvider);
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: (_) => _activity(),
+      onPointerHover: (_) => _activity(),
+      onPointerSignal: (_) => _activity(),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          widget.child,
+          if (covered) const Positioned.fill(child: _PrivacyCover()),
+        ],
+      ),
+    );
+  }
+}
+
+/// What a hidden Pastee leaves behind when App Lock is on: nothing readable.
+class _PrivacyCover extends StatelessWidget {
+  const _PrivacyCover();
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return AbsorbPointer(
+      child: ColoredBox(
+        color: cs.surface,
+        child: Center(
+          child: Icon(Icons.content_paste_rounded,
+              size: 48, color: cs.primary.withValues(alpha: 0.35)),
+        ),
+      ),
+    );
   }
 }
 
@@ -73,21 +157,36 @@ class LockScreen extends ConsumerStatefulWidget {
 class _LockScreenState extends ConsumerState<LockScreen> {
   final _controller = TextEditingController();
   final _focusNode = FocusNode(debugLabel: 'passcode');
+  late final AppLifecycleListener _lifecycle;
   String? _message;
   bool _busy = false;
   bool _deviceAvailable = false;
   String _deviceName = 'Touch ID';
+  bool _promptOnResume = false;
   Timer? _ticker;
 
   @override
   void initState() {
     super.initState();
+    // Touch ID / Windows Hello is offered when someone brings Pastee to the
+    // front: never at the moment it locks (face unlock would undo ⌘L at
+    // once) and never while it's hidden. The system prompt itself only makes
+    // Pastee inactive, not hidden, so cancelling it doesn't re-prompt.
+    _lifecycle = AppLifecycleListener(
+      onShow: () => _promptOnResume = true,
+      onResume: () {
+        if (!_promptOnResume) return;
+        _promptOnResume = false;
+        _autoPrompt();
+      },
+    );
     _startTickerIfLockedOut();
     _checkDevice();
   }
 
   @override
   void dispose() {
+    _lifecycle.dispose();
     _ticker?.cancel();
     _controller.dispose();
     _focusNode.dispose();
@@ -103,10 +202,21 @@ class _LockScreenState extends ConsumerState<LockScreen> {
       _deviceAvailable = available;
       _deviceName = name;
     });
-    // Offer Touch ID / Windows Hello straight away, once per lock.
-    if (available && ref.read(appLockProvider).deviceUnlock) {
-      _unlockWithDevice();
+    // At launch, offer it straight away if Pastee is already in front.
+    if (ref.read(appLockProvider.notifier).isLaunchLock) {
+      final state = WidgetsBinding.instance.lifecycleState;
+      if (state == null || state == AppLifecycleState.resumed) {
+        _autoPrompt();
+      } else {
+        _promptOnResume = true;
+      }
     }
+  }
+
+  void _autoPrompt() {
+    if (!mounted || _busy || !_deviceAvailable) return;
+    if (!ref.read(appLockProvider).deviceUnlock) return;
+    _unlockWithDevice();
   }
 
   Future<void> _unlockWithDevice() async {
@@ -164,35 +274,9 @@ class _LockScreenState extends ConsumerState<LockScreen> {
     final lock = ref.read(appLockProvider);
     final erase = await showDialog<bool>(
       context: context,
-      builder: (context) {
-        final cs = Theme.of(context).colorScheme;
-        return AlertDialog(
-          title: const Text('Forgot your passcode?'),
-          content: SizedBox(
-            width: 360,
-            child: Text([
-              'Pastee can’t recover your passcode.',
-              if (lock.deviceUnlock && _deviceAvailable)
-                'You can still unlock with $_deviceName, then set a new passcode in Settings.',
-              'Or erase all saved items and turn App Lock off. This can’t be undone.',
-            ].join('\n\n')),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              style: FilledButton.styleFrom(
-                backgroundColor: cs.error,
-                foregroundColor: cs.onError,
-              ),
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Erase all items'),
-            ),
-          ],
-        );
-      },
+      builder: (_) => _ErasePasscodeDialog(
+        deviceHint: lock.deviceUnlock && _deviceAvailable ? _deviceName : null,
+      ),
     );
     if (erase != true || !mounted) return;
     await ref.read(pasteListProvider.notifier).clearAll();
@@ -200,10 +284,7 @@ class _LockScreenState extends ConsumerState<LockScreen> {
   }
 
   void _hideIfSummoned() {
-    if (ref.read(summonedProvider)) {
-      ref.read(summonedProvider.notifier).state = false;
-      ref.read(desktopBridgeProvider).hideWindow();
-    }
+    if (ref.read(summonedProvider)) ref.read(windowControllerProvider).hide();
   }
 
   String _format(Duration d) {
@@ -306,6 +387,77 @@ class _LockScreenState extends ConsumerState<LockScreen> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Erasing everything takes typing ERASE, so a passer-by can't wipe your
+/// items with two clicks.
+class _ErasePasscodeDialog extends StatefulWidget {
+  const _ErasePasscodeDialog({this.deviceHint});
+
+  /// "Touch ID" etc. if that can still unlock.
+  final String? deviceHint;
+
+  @override
+  State<_ErasePasscodeDialog> createState() => _ErasePasscodeDialogState();
+}
+
+class _ErasePasscodeDialogState extends State<_ErasePasscodeDialog> {
+  final _confirm = TextEditingController();
+
+  @override
+  void dispose() {
+    _confirm.dispose();
+    super.dispose();
+  }
+
+  bool get _confirmed => _confirm.text.trim().toUpperCase() == 'ERASE';
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return AlertDialog(
+      title: const Text('Forgot your passcode?'),
+      content: SizedBox(
+        width: 360,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text([
+              'Pastee can’t recover your passcode.',
+              if (widget.deviceHint != null)
+                'You can still unlock with ${widget.deviceHint}, then set a new passcode in Settings.',
+              'Or erase all saved items and turn App Lock off. This can’t be undone.',
+            ].join('\n\n')),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _confirm,
+              autofocus: true,
+              onChanged: (_) => setState(() {}),
+              decoration: const InputDecoration(
+                labelText: 'Type ERASE to confirm',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(
+            backgroundColor: cs.error,
+            foregroundColor: cs.onError,
+          ),
+          onPressed: _confirmed ? () => Navigator.pop(context, true) : null,
+          child: const Text('Erase all items'),
+        ),
+      ],
     );
   }
 }

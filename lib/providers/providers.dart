@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
@@ -165,6 +166,78 @@ class HotKeyNotifier extends StateNotifier<HotKeyStatus> {
 /// True while Pastee is showing because the summon shortcut brought it up.
 /// Copying then hides it again (if that setting is on), and Escape hides it.
 final summonedProvider = StateProvider<bool>((ref) => false);
+
+// ── window: summon, hide, privacy cover ──────────────────────────────────
+
+/// Drawn over the items while Pastee is hidden with App Lock on, so the
+/// window's last frame (which Windows and macOS reuse for taskbar, Alt+Tab
+/// and Exposé previews) never shows them.
+final privacyCoverProvider = StateProvider<bool>((ref) => false);
+
+/// Storage notices (migration, unreadable data) are shown once per run, not
+/// every time the list comes back after an unlock.
+final storageNoticeShownProvider = StateProvider<bool>((ref) => false);
+
+/// Follows the summon shortcut and hides Pastee safely. The app root watches
+/// it, so it works while the lock screen is showing too.
+final windowControllerProvider = Provider<WindowController>((ref) {
+  final controller = WindowController(ref);
+  final subscription = ref
+      .watch(desktopBridgeProvider)
+      .summonEvents
+      .listen(controller._onSummon);
+  ref.onDispose(subscription.cancel);
+  return controller;
+});
+
+class WindowController {
+  WindowController(this._ref);
+
+  final Ref _ref;
+  Future<void>? _hiding;
+
+  /// Bumped whenever the shortcut shows Pastee, so a hide that is still
+  /// drawing its cover knows it has been overtaken.
+  int _shows = 0;
+
+  void _onSummon(bool shown) {
+    if (shown) {
+      _shows++;
+      cameToFront();
+      _ref.read(summonedProvider.notifier).state = true;
+    } else {
+      // The native side waits for this (with a short fallback) so the lock
+      // screen or cover is drawn before the window disappears.
+      hide();
+    }
+  }
+
+  /// Hides Pastee. With App Lock on, it first draws what should stay on
+  /// screen while hidden: the lock screen ("as soon as hidden") or a cover.
+  Future<void> hide() => _hiding ??= _hide().whenComplete(() => _hiding = null);
+
+  Future<void> _hide() async {
+    final shows = _shows;
+    _ref.read(summonedProvider.notifier).state = false;
+    final lock = _ref.read(appLockProvider);
+    if (lock.enabled && !lock.locked) {
+      if (lock.timeout == LockTimeout.immediately) {
+        _ref.read(appLockProvider.notifier).lock();
+      } else {
+        _ref.read(privacyCoverProvider.notifier).state = true;
+      }
+      SchedulerBinding.instance.scheduleFrame();
+      await SchedulerBinding.instance.endOfFrame;
+      // Shown again while the cover was drawn (the native side already hid
+      // it after its fallback): don't hide what the user just brought back.
+      if (shows != _shows) return;
+    }
+    await _ref.read(desktopBridgeProvider).hideWindow();
+  }
+
+  /// Pastee is in front again (shortcut, Dock, taskbar…): drop the cover.
+  void cameToFront() => _ref.read(privacyCoverProvider.notifier).state = false;
+}
 
 // ── pastes ───────────────────────────────────────────────────────────────
 

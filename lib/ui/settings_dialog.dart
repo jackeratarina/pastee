@@ -100,15 +100,39 @@ class _SettingsDialogState extends ConsumerState<SettingsDialog> {
   Future<void> _setDeviceUnlock(bool on) async {
     final lock = ref.read(appLockProvider.notifier);
     if (on) {
-      // Make sure it actually works on this computer before relying on it.
-      final ok =
-          await lock.confirmWithDevice('Use $_deviceName to unlock Pastee');
+      // Adding another way in needs the passcode first: on a Mac the system
+      // prompt also accepts the login password.
+      if (!await confirmPasscode(context,
+          title: 'Turn on $_deviceName', action: 'Continue')) {
+        return;
+      }
+      // Then make sure it actually works on this computer.
+      final ok = await lock.testDevice('Use $_deviceName to unlock Pastee');
       if (!ok) {
         if (mounted) _notify('$_deviceName didn’t confirm it was you');
         return;
       }
     }
     await lock.setDeviceUnlock(on);
+  }
+
+  /// Choosing a stricter relock is free; a looser one needs the passcode.
+  Future<void> _setTimeout(LockTimeout timeout) async {
+    final current = ref.read(appLockProvider).timeout;
+    if (timeout.index > current.index &&
+        !await confirmPasscode(context,
+            title: 'Lock Pastee less often', action: 'Change')) {
+      return;
+    }
+    await ref.read(appLockProvider.notifier).setTimeout(timeout);
+  }
+
+  String _timeoutLabel(LockTimeout timeout) {
+    // On a Mac, closing the window doesn't quit Pastee, so say what this means.
+    if (timeout == LockTimeout.onlyAtLaunch && isMacPlatform) {
+      return 'Only when Pastee starts (not when closed)';
+    }
+    return timeout.label;
   }
 
   @override
@@ -498,23 +522,32 @@ class _SettingsDialogState extends ConsumerState<SettingsDialog> {
             contentPadding: EdgeInsets.zero,
             dense: true,
             title: Text('Unlock with $_deviceName'),
-            subtitle: const Text('The passcode always works too.'),
+            subtitle: Text(isMacPlatform
+                ? 'Your Mac password also works in that prompt. So does the passcode.'
+                : 'Your Windows Hello PIN also works in that prompt. So does the passcode.'),
             value: lock.deviceUnlock,
             onChanged: _setDeviceUnlock,
           ),
         Row(
           children: [
+            Text('Lock again', style: theme.textTheme.bodyMedium),
+            const SizedBox(width: 16),
             Expanded(
-                child: Text('Lock again', style: theme.textTheme.bodyMedium)),
-            DropdownButton<LockTimeout>(
-              value: lock.timeout,
-              onChanged: (t) {
-                if (t != null) ref.read(appLockProvider.notifier).setTimeout(t);
-              },
-              items: [
-                for (final t in LockTimeout.values)
-                  DropdownMenuItem(value: t, child: Text(t.label)),
-              ],
+              child: DropdownButton<LockTimeout>(
+                isExpanded: true,
+                value: lock.timeout,
+                onChanged: (t) {
+                  if (t != null) _setTimeout(t);
+                },
+                items: [
+                  for (final t in LockTimeout.values)
+                    DropdownMenuItem(
+                      value: t,
+                      child: Text(_timeoutLabel(t),
+                          overflow: TextOverflow.ellipsis),
+                    ),
+                ],
+              ),
             ),
           ],
         ),

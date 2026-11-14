@@ -22,9 +22,10 @@ abstract class DesktopBridge {
   /// False where the native side doesn't exist (tests, Linux dev builds).
   bool get isSupported;
 
-  /// Fires when the summon shortcut is pressed: true if that showed Pastee,
-  /// false if it hid it. The native side does the showing and hiding itself,
-  /// which keeps focus handling instant and reliable.
+  /// Fires when the summon shortcut is pressed. true: the native side has
+  /// already shown and focused Pastee. false: the user wants it hidden; the
+  /// native side waits for Dart to draw its lock screen or privacy cover and
+  /// call [hideWindow], and hides by itself after 500 ms if that never comes.
   Stream<bool> get summonEvents;
 
   Future<HotKeyResult> registerHotKey(HotKeySpec spec);
