@@ -5,10 +5,10 @@
 // 'flutter create' template.
 
 // The application's name. By default this is also the title of the Flutter window.
-PRODUCT_NAME = pastee
+PRODUCT_NAME = Pastee
 
 // The application's bundle identifier
 PRODUCT_BUNDLE_IDENTIFIER = com.pastee.pastee
 
 // The copyright displayed in application information
-PRODUCT_COPYRIGHT = Copyright © 2026 com.pastee. All rights reserved.
+PRODUCT_COPYRIGHT = Copyright © 2026 Pastee contributors. MIT License.

@@ -8,87 +8,144 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue" alt="Platform"/>
-  <img src="https://img.shields.io/badge/flutter-%3E%3D3.3-02569B?logo=flutter" alt="Flutter"/>
+  <img src="https://img.shields.io/badge/flutter-3.47-02569B?logo=flutter" alt="Flutter"/>
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License"/>
+  <a href="https://github.com/jackeratarina/pastee/actions/workflows/build.yml"><img src="https://github.com/jackeratarina/pastee/actions/workflows/build.yml/badge.svg" alt="Build"/></a>
 </p>
 
 ---
 
+## Download
+
+Get the latest version from **[Releases](https://github.com/jackeratarina/pastee/releases/latest)**:
+
+| | File | Notes |
+|---|---|---|
+| **macOS 12+** | `Pastee-<version>-macos.dmg` | Universal (Apple silicon and Intel). Drag Pastee into Applications. |
+| **Windows 10/11** | `Pastee-<version>-windows-x64-setup.exe` | Installs for your user, no admin rights needed. Can start Pastee at sign-in. |
+| | `Pastee-<version>-windows-x64.zip` | Portable: unzip anywhere and run `pastee.exe`. |
+
+The builds are not code-signed yet, so the first launch shows a warning:
+
+- **macOS:** open Pastee, click **Done** on the warning, then go to **System Settings → Privacy & Security** and click **Open Anyway**. (Or run `xattr -dr com.apple.quarantine /Applications/Pastee.app`.)
+- **Windows:** on "Windows protected your PC", click **More info → Run anyway**.
+
 ## Features
 
-- **Clipboard Capture** — Paste anything with `⌘V` / `Ctrl+V`. Duplicates are automatically detected and skipped.
-- **Smart Field Extraction** — Automatically detects and labels up to 9 copyable fields per item (emails, URLs, passwords, phone numbers, codes, etc.).
-- **Instant Copy** — `⌘C` copies the first item. `⌘1`–`⌘9` copies a specific extracted field.
-- **Cut & Delete** — `⌘X` cuts the first item. `Delete` removes it.
-- **Inline Title Editing** — `⌘E` or double-click to rename. Titles auto-generate from content.
-- **Real-time Search** — `⌘F` to find items by title or content with debounced filtering.
-- **Copy Flash Animation** — Visual yellow highlight on the exact content copied (whole item or individual field chip).
-- **Local Persistence** — All data stored locally with Hive. Nothing leaves your machine.
-- **Light & Dark Mode** — Toggle with one click.
+- **Summon from anywhere.** Press **⌃⌘V** (macOS) or **Alt+Shift+V** (Windows) in any app to show or hide Pastee. Copy a field and Pastee hides itself again, so your next paste lands where you were.
+- **Clipboard capture.** Paste anything with `⌘V` / `Ctrl+V`. Duplicates are detected and skipped.
+- **Smart field extraction.** Up to 9 copyable fields per item: passwords, usernames, emails, links, phone numbers, order and invoice numbers, IP addresses, API keys, card numbers, one-time codes, and any `Key: value` line. English and Vietnamese labels.
+- **Password masking.** Detected secrets show as `••••••••` everywhere until you click the eye. Copying always gets the real value. Mark any item **always hidden** with the lock.
+- **Instant copy.** `⌘C` copies the top item, `⌘1`–`⌘9` copies one of its fields, and `Enter` copies the top search result.
+- **Cut, delete, undo.** `⌘X` cuts the top item, `Delete` removes it, and `⌘Z` brings it back.
+- **Inline title editing.** `⌘E` or double-click to rename. Titles are generated from the first line, with any password masked.
+- **Real-time search.** Start typing (or press `⌘F`) to filter by title or content.
+- **Copy flash.** A yellow highlight shows exactly what was copied, the whole item or a single field.
+- **Private and local.** Items are stored encrypted on your computer. Nothing leaves your machine.
+- **Light, dark or system theme.**
 
-## Keyboard Shortcuts
+## Keyboard shortcuts
+
+On Windows, use `Ctrl` wherever macOS uses `⌘`.
 
 | Shortcut | Action |
 |---|---|
-| `⌘V` / `Ctrl+V` | Paste clipboard text as new item |
-| `⌘C` / `Ctrl+C` | Copy first item's full content |
-| `⌘1`–`⌘9` / `Ctrl+1`–`9` | Copy extracted field N from first item |
-| `⌘X` / `Ctrl+X` | Cut first item (copy + delete) |
-| `⌘E` / `Ctrl+E` | Edit first item's title |
-| `⌘F` / `Ctrl+F` | Focus search bar |
-| `Delete` / `Backspace` | Delete first item |
-| `Escape` | Clear search / exit editing |
+| **⌃⌘V** / **Alt+Shift+V** | Show or hide Pastee from any app (changeable in Settings) |
+| `⌘V` | Save what's on the clipboard as a new item |
+| `⌘C` or `Enter` | Copy the top item |
+| `⌘1`–`⌘9` | Copy field 1–9 of the top item |
+| `⌘X` | Cut the top item (copy, then delete) |
+| `Delete` / `Backspace` | Delete the top item |
+| `⌘Z` | Undo the last delete or cut |
+| `⌘E` | Rename the top item |
+| `⌘R` | Show or hide the top item's masked text |
+| `⌘F`, or just type | Search |
+| `⌘,` | Settings |
+| `Esc` | Clear the search, cancel renaming, or hide a summoned Pastee |
 
-## Getting Started
+In the search box, `⌘X`, `⌘V`, `⌘A` and `⌘Z` edit the search text as usual.
 
-### Prerequisites
+### Choosing a summon shortcut
 
-- [Flutter SDK](https://flutter.dev/docs/get-started/install) >= 3.3
-- macOS or Windows
+Settings suggests shortcuts that don't clash with the system or common apps:
 
-### Build & Run
+| macOS | | Windows | |
+|---|---|---|---|
+| **⌃⌘V** | Recommended: free in macOS and most apps | **Alt+Shift+V** | Recommended: free in Windows and most apps |
+| ⇧⌘V | Popular with clipboard apps; VS Code uses it | Ctrl+Shift+V | Browsers, Office and Terminal paste plain text with it |
+| ⌥⌘V | Finder uses it to move files | Win+Alt+V | Rarely taken |
+| ⌃⌥Space | Rarely taken | Ctrl+Alt+V | Office Paste Special; types a character on some layouts |
+
+You can also record your own. It needs two modifier keys, and Pastee tells you if another app already owns it.
+On macOS, closing the window keeps Pastee running so the shortcut keeps working; quit with `⌘Q`.
+To have Pastee ready after you log in, add it under **System Settings → General → Login Items** (macOS) or tick **Start Pastee when I sign in** in the installer (Windows).
+
+## Privacy
+
+- Items are stored with AES-256 encryption (Hive) in the app's data folder:
+  - macOS: `~/Library/Containers/com.pastee.pastee/Data/Library/Application Support/com.pastee.pastee/data`
+  - Windows: `%APPDATA%\com.pastee\Pastee\data`
+- On Windows, the encryption key is protected with DPAPI, so only your Windows account on this PC can unlock it. On macOS, it sits inside the app's sandbox container, which other apps can't read without asking.
+- Pastee 1.0 kept an unencrypted file in your Documents folder. 1.1 moves those items into encrypted storage on first launch and deletes the old file.
+- Masking hides secrets on screen (screen sharing, someone looking over your shoulder). Anything you copy is a normal clipboard entry.
+
+## Build from source
+
+Requires [Flutter](https://docs.flutter.dev/get-started/install) 3.47 or later, plus Xcode (macOS) or Visual Studio with "Desktop development with C++" (Windows).
 
 ```bash
-# Clone the repo
 git clone https://github.com/jackeratarina/pastee.git
 cd pastee
-
-# Get dependencies
 flutter pub get
+flutter test
 
-# Run on desktop
-flutter run -d macos    # or -d windows
-
-# Build release
-flutter build macos     # or: flutter build windows
+flutter run -d macos      # or: flutter run -d windows
+flutter build macos       # or: flutter build windows
 ```
 
-## Project Structure
+### Releasing
+
+1. Bump `version:` in `pubspec.yaml` and add a section for it to `CHANGELOG.md`.
+2. Commit, then tag and push: `git tag v1.2.0 && git push origin main v1.2.0`.
+3. GitHub Actions ([build.yml](.github/workflows/build.yml)) tests the code, builds both apps, and publishes a release with the DMG, the Windows installer and zip, and checksums.
+
+## Project structure
 
 ```
 lib/
-├── main.dart                 # App entry point, Hive init
+├── main.dart                    # Entry point: opens storage, starts the app
+├── version.dart                 # Version string, set by the release build
 ├── model/
-│   ├── paste_item.dart       # Data model with Hive annotations
-│   └── paste_item.g.dart     # Generated Hive adapter
+│   ├── paste_item.dart          # Item model + Hive adapter
+│   ├── app_settings.dart        # Preferences
+│   └── hotkey.dart              # Summon shortcut: presets, key codes, conflict checks
 ├── providers/
-│   └── providers.dart        # Riverpod state management
+│   └── providers.dart           # Riverpod state: items, search, settings, shortcut
 ├── services/
-│   ├── clipboard_service.dart    # Clipboard read/write wrapper
-│   ├── field_extractor.dart      # Smart field detection (email, URL, etc.)
-│   └── storage_service.dart      # Hive CRUD operations
+│   ├── field_extractor.dart     # Field detection (passwords, links, codes, …)
+│   ├── masking.dart             # Turning secrets into dots
+│   ├── paste_titles.dart        # Generated titles
+│   ├── storage_service.dart     # Encrypted Hive storage + migration from 1.0
+│   ├── key_store.dart           # Encryption key file (DPAPI on Windows)
+│   ├── desktop_bridge.dart      # Dart side of the native shortcut/window bridge
+│   ├── clipboard_service.dart   # Clipboard read/write
+│   └── text_utils.dart          # Emoji-safe truncation
 └── ui/
-    ├── home_screen.dart      # Main screen, keyboard handling
-    ├── paste_tile.dart       # Item tile with field chips & flash animation
-    └── theme.dart            # Light/dark Material 3 themes
+    ├── home_screen.dart         # Main screen, keyboard handling
+    ├── paste_tile.dart          # Item tile, field chips, masking, flash animation
+    ├── settings_dialog.dart     # Shortcut picker and recorder, privacy, theme
+    └── …
+macos/Runner/MainFlutterWindow.swift   # Global shortcut (Carbon) and show/hide
+windows/runner/flutter_window.cpp      # Global shortcut (RegisterHotKey) and show/hide
+windows/installer/pastee.iss           # Windows installer (Inno Setup)
 ```
 
-## Tech Stack
+## Tech stack
 
-- **Flutter** — Cross-platform desktop UI
-- **Riverpod** — State management
-- **Hive** — Lightweight local storage
-- **Material 3** — Modern theming with `ColorScheme.fromSeed`
+- **Flutter**: cross-platform desktop UI
+- **Riverpod**: state management
+- **Hive**: lightweight encrypted local storage
+- **Material 3**: theming with `ColorScheme.fromSeed`
 
 ---
 

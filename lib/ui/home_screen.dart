@@ -1,12 +1,19 @@
 import 'dart:async';
-import 'dart:io' show Platform;
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:pastee/providers/providers.dart';
-import 'package:pastee/services/field_extractor.dart';
-import 'package:pastee/ui/paste_tile.dart';
+
+import '../model/paste_item.dart';
+import '../providers/providers.dart';
+import '../services/field_extractor.dart';
+import '../services/paste_titles.dart';
+import '../services/text_utils.dart';
+import 'key_cap.dart';
+import 'paste_tile.dart';
+import 'settings_dialog.dart';
+import 'shortcut_labels.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -16,34 +23,188 @@ class HomeScreen extends ConsumerStatefulWidget {
 }
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
-  final ScrollController _scrollController = ScrollController();
-  final FocusNode _searchFocusNode = FocusNode();
-  final TextEditingController _searchController = TextEditingController();
-  final FocusNode _listFocusNode = FocusNode();
-  Timer? _debounce;
+  /// Revealed secrets hide themselves again after this long.
+  static const revealDuration = Duration(seconds: 20);
+  static const _maxUndo = 20;
 
-  // Flash state: which item, which field (-1 = whole tile), generation counter
+  final ScrollController _scrollController = ScrollController();
+  final FocusNode _searchFocusNode = FocusNode(debugLabel: 'search');
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _listFocusNode = FocusNode(debugLabel: 'list');
+  Timer? _debounce;
+  Timer? _hideTimer;
+
+  // Flash state: which item, which field (-1 = whole tile), generation counter.
   String? _flashItemId;
   int _flashFieldIndex = -1;
   int _flashGeneration = 0;
   Timer? _flashTimer;
 
-  // Title editing: tracked via callback from PasteTile
+  // Title editing is reported by the tile.
   bool _isTitleEditing = false;
 
-  // Edit-title trigger for first item (increment to trigger)
+  // Incremented to make the top tile start editing its title.
   int _editGeneration = 0;
+
+  /// Items whose hidden text is showing, each with its re-hide timer.
+  final Map<String, Timer> _revealed = {};
+  final List<PasteItem> _undoStack = [];
+
+  StreamSubscription<bool>? _summonSubscription;
+  late final AppLifecycleListener _lifecycle;
+  AppLifecycleState? _lastLifecycleState;
+  bool _settingsOpen = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _summonSubscription =
+        ref.read(desktopBridgeProvider).summonEvents.listen(_onSummon);
+    _lifecycle = AppLifecycleListener(onStateChange: _onLifecycleChanged);
+    ref.listenManual<HotKeyStatus>(hotKeyProvider, (previous, next) {
+      if (next.error != null && next.error != previous?.error) {
+        _showSnackBar(
+          next.error!,
+          duration: const Duration(seconds: 6),
+          action: SnackBarAction(label: 'Change', onPressed: _openSettings),
+        );
+      }
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _showStorageNotices());
+  }
 
   @override
   void dispose() {
+    _summonSubscription?.cancel();
+    _lifecycle.dispose();
     _scrollController.dispose();
     _searchFocusNode.dispose();
     _searchController.dispose();
     _listFocusNode.dispose();
     _debounce?.cancel();
+    _hideTimer?.cancel();
     _flashTimer?.cancel();
+    for (final timer in _revealed.values) {
+      timer.cancel();
+    }
     super.dispose();
   }
+
+  // ── summoning, focus and visibility ──────────────────────
+
+  void _onSummon(bool shown) {
+    if (!mounted) return;
+    ref.read(summonedProvider.notifier).state = shown;
+    if (shown) {
+      if (!_searchFocusNode.hasFocus && !_isTitleEditing) {
+        _listFocusNode.requestFocus();
+      }
+      if (_scrollController.hasClients) _scrollController.jumpTo(0);
+    } else {
+      _hideRevealed();
+    }
+  }
+
+  void _onLifecycleChanged(AppLifecycleState state) {
+    final previous = _lastLifecycleState;
+    _lastLifecycleState = state;
+    final lostFocus = previous == AppLifecycleState.resumed &&
+        state == AppLifecycleState.inactive;
+    if (state == AppLifecycleState.hidden || lostFocus) {
+      ref.read(summonedProvider.notifier).state = false;
+      _hideRevealed();
+    }
+  }
+
+  void _hideWindow() {
+    ref.read(summonedProvider.notifier).state = false;
+    _hideRevealed();
+    ref.read(desktopBridgeProvider).hideWindow();
+  }
+
+  /// After copying from a summoned Pastee, get out of the way so the next
+  /// paste lands in the app you came from.
+  void _hideAfterCopyIfSummoned() {
+    if (!ref.read(settingsProvider).hideAfterCopy ||
+        !ref.read(summonedProvider)) {
+      return;
+    }
+    _hideTimer?.cancel();
+    _hideTimer = Timer(const Duration(milliseconds: 250), () {
+      if (mounted && ref.read(summonedProvider)) _hideWindow();
+    });
+  }
+
+  void _restoreFocus() {
+    if (!mounted) return;
+    if (!_searchFocusNode.hasFocus && !_isTitleEditing) {
+      _listFocusNode.requestFocus();
+    }
+  }
+
+  void _focusSearch() => _searchFocusNode.requestFocus();
+
+  Future<void> _openSettings() async {
+    if (_settingsOpen || !mounted) return;
+    _settingsOpen = true;
+    await showSettingsDialog(context);
+    _settingsOpen = false;
+    _restoreFocus();
+  }
+
+  // ── reveal / hide ─────────────────────────────────────────
+
+  bool _isHidden(PasteItem item, Extraction extraction) =>
+      !_revealed.containsKey(item.id) &&
+      (item.sensitive ||
+          (ref.read(settingsProvider).maskSecrets && extraction.hasSecrets));
+
+  void _toggleReveal(String id) {
+    final timer = _revealed.remove(id);
+    if (timer != null) {
+      timer.cancel();
+      setState(() {});
+      return;
+    }
+    setState(() {
+      _revealed[id] = Timer(revealDuration, () {
+        if (mounted) setState(() => _revealed.remove(id));
+      });
+    });
+  }
+
+  void _toggleRevealFirst() {
+    final items = ref.read(filteredPasteListProvider);
+    if (items.isEmpty) return;
+    final item = items.first;
+    if (!item.sensitive && !FieldExtractor.extract(item.content).hasSecrets) {
+      _showSnackBar('Nothing is hidden in the top item');
+      return;
+    }
+    _toggleReveal(item.id);
+  }
+
+  void _hideRevealed() {
+    if (_revealed.isEmpty) return;
+    for (final timer in _revealed.values) {
+      timer.cancel();
+    }
+    if (mounted) setState(_revealed.clear);
+  }
+
+  Future<void> _toggleSensitive(PasteItem item) async {
+    final sensitive = !item.sensitive;
+    await ref.read(pasteListProvider.notifier).setSensitive(item.id, sensitive);
+    _revealed.remove(item.id)?.cancel();
+    if (!mounted) return;
+    setState(() {});
+    _showSnackBar(sensitive
+        ? 'This item stays hidden until you reveal it'
+        : 'No longer always hidden');
+    _restoreFocus();
+  }
+
+  // ── copy / paste / cut / delete / undo ───────────────────
 
   void _triggerFlash(String itemId, [int fieldIndex = -1]) {
     _flashTimer?.cancel();
@@ -60,23 +221,46 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   void _onSearchChanged(String query) {
     _debounce?.cancel();
     _debounce = Timer(const Duration(milliseconds: 250), () {
-      ref.read(searchQueryProvider.notifier).state = query;
+      if (mounted) ref.read(searchQueryProvider.notifier).state = query;
     });
   }
 
-  // ── copy / paste / cut / delete ──────────────────────────
+  void _clearSearch() {
+    _debounce?.cancel();
+    _searchController.clear();
+    ref.read(searchQueryProvider.notifier).state = '';
+  }
+
+  /// Typing while the list has focus starts a search.
+  void _typeIntoSearch(String character) {
+    final text = _searchController.text + character;
+    _searchController.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    _searchFocusNode.requestFocus();
+    _onSearchChanged(text);
+    setState(() {});
+  }
 
   Future<void> _pasteFromClipboard() async {
-    final clipboard = ref.read(clipboardServiceProvider);
-    final text = await clipboard.getText();
-    if (text == null || text.trim().isEmpty) return;
-
-    final notifier = ref.read(pasteListProvider.notifier);
-    if (notifier.containsContent(text)) {
-      if (mounted) _showSnackBar('Already in list');
+    final text = await ref.read(clipboardServiceProvider).getText();
+    if (!mounted) return;
+    if (text == null || text.trim().isEmpty) {
+      _showSnackBar('The clipboard has no text to save');
       return;
     }
-
+    final notifier = ref.read(pasteListProvider.notifier);
+    final existing = notifier.findByContent(text);
+    if (existing != null) {
+      if (ref.read(filteredPasteListProvider).any((i) => i.id == existing.id)) {
+        _triggerFlash(existing.id);
+      }
+      _showSnackBar('Already in the list');
+      return;
+    }
+    // Show the new item even if a search was hiding it.
+    if (_searchController.text.isNotEmpty) _clearSearch();
     await notifier.addFromClipboard(text);
     if (_scrollController.hasClients) {
       _scrollController.animateTo(0,
@@ -85,126 +269,149 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     _restoreFocus();
   }
 
+  Future<void> _copyItem(PasteItem item) async {
+    await ref.read(clipboardServiceProvider).setText(item.content);
+    if (!mounted) return;
+    _triggerFlash(item.id);
+    _restoreFocus();
+    _showSnackBar('Copied to clipboard');
+    _hideAfterCopyIfSummoned();
+  }
+
   Future<void> _copyFirstItem() async {
     final items = ref.read(filteredPasteListProvider);
     if (items.isEmpty) return;
-
-    final clipboard = ref.read(clipboardServiceProvider);
-    await clipboard.setText(items[0].content);
-    _triggerFlash(items[0].id, -1);
-    _restoreFocus();
-
-    if (mounted) _showSnackBar('Copied to clipboard');
+    await _copyItem(items.first);
   }
 
-  Future<void> _copyExtractedField(int fieldNumber) async {
-    final items = ref.read(filteredPasteListProvider);
-    if (items.isEmpty) return;
-
-    final item = items[0];
-    final fields = FieldExtractor.extract(item.content);
-    if (fieldNumber < 1 || fieldNumber > fields.length) {
-      if (mounted) _showSnackBar('No field $fieldNumber');
+  Future<void> _copyField(PasteItem item, int index) async {
+    final extraction = FieldExtractor.extract(item.content);
+    if (index < 0 || index >= extraction.fields.length) {
+      _showSnackBar('The top item has no field ${index + 1}');
       return;
     }
-
-    final field = fields[fieldNumber - 1];
-    final clipboard = ref.read(clipboardServiceProvider);
-    await clipboard.setText(field.value);
-    _triggerFlash(item.id, fieldNumber - 1);
+    final field = extraction.fields[index];
+    await ref.read(clipboardServiceProvider).setText(field.value);
+    if (!mounted) return;
+    _triggerFlash(item.id, index);
     _restoreFocus();
-
-    final preview = field.value.length > 30
-        ? '${field.value.substring(0, 28)}…'
-        : field.value;
-    if (mounted) _showSnackBar('${field.type}: $preview');
+    if (_isHidden(item, extraction)) {
+      _showSnackBar('Copied ${field.label}');
+    } else {
+      final preview = truncateGraphemes(
+          sanitizeUtf16(field.value.replaceAll('\n', ' ')), 30);
+      _showSnackBar('Copied ${field.label}: $preview');
+    }
+    _hideAfterCopyIfSummoned();
   }
 
-  Future<void> _copyFieldValue(
-      String value, String itemId, int fieldIndex) async {
-    final clipboard = ref.read(clipboardServiceProvider);
-    await clipboard.setText(value);
-    _triggerFlash(itemId, fieldIndex);
-    _restoreFocus();
-
-    final preview =
-        value.length > 30 ? '${value.substring(0, 28)}…' : value;
-    if (mounted) _showSnackBar('Copied: $preview');
+  Future<void> _copyFieldOfFirst(int index) async {
+    final items = ref.read(filteredPasteListProvider);
+    if (items.isEmpty) return;
+    await _copyField(items.first, index);
   }
 
   Future<void> _cutFirstItem() async {
     final items = ref.read(filteredPasteListProvider);
     if (items.isEmpty) return;
-
-    final clipboard = ref.read(clipboardServiceProvider);
-    await clipboard.setText(items[0].content);
-    await ref.read(pasteListProvider.notifier).deleteItem(items[0].id);
-    _restoreFocus();
-
-    if (mounted) _showSnackBar('Cut to clipboard');
+    final item = items.first;
+    await ref.read(clipboardServiceProvider).setText(item.content);
+    await _deleteItem(item, message: 'Cut to clipboard');
   }
 
   Future<void> _deleteFirstItem() async {
     final items = ref.read(filteredPasteListProvider);
     if (items.isEmpty) return;
-
-    await ref.read(pasteListProvider.notifier).deleteItem(items[0].id);
-    _restoreFocus();
-
-    if (mounted) _showSnackBar('Item removed');
+    await _deleteItem(items.first);
   }
 
-  Future<void> _onItemTap(String itemId, String content) async {
-    final clipboard = ref.read(clipboardServiceProvider);
-    await clipboard.setText(content);
-    _triggerFlash(itemId, -1);
+  Future<void> _deleteItem(PasteItem item,
+      {String message = 'Item deleted'}) async {
+    final removed =
+        await ref.read(pasteListProvider.notifier).deleteItem(item.id);
+    if (removed == null || !mounted) return;
+    _revealed.remove(item.id)?.cancel();
+    _undoStack.add(removed);
+    if (_undoStack.length > _maxUndo) _undoStack.removeAt(0);
     _restoreFocus();
+    _showSnackBar(
+      message,
+      duration: const Duration(seconds: 4),
+      action: SnackBarAction(label: 'Undo', onPressed: _undo),
+    );
+  }
 
-    if (mounted) _showSnackBar('Copied to clipboard');
+  Future<void> _undo() async {
+    if (_undoStack.isEmpty) {
+      _showSnackBar('Nothing to undo');
+      return;
+    }
+    final item = _undoStack.removeLast();
+    await ref.read(pasteListProvider.notifier).restore(item);
+    if (!mounted) return;
+    _triggerFlash(item.id);
+    _restoreFocus();
+    final title =
+        displayTitle(item, FieldExtractor.extract(item.content), hidden: true);
+    _showSnackBar('Restored “${truncateGraphemes(title, 30)}”');
   }
 
   void _editFirstTitle() {
-    final items = ref.read(filteredPasteListProvider);
-    if (items.isEmpty) return;
+    if (ref.read(filteredPasteListProvider).isEmpty) return;
     setState(() => _editGeneration++);
   }
 
-  // ── focus management ─────────────────────────────────────
+  void _toggleTheme() {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    ref
+        .read(settingsProvider.notifier)
+        .setThemeMode(dark ? ThemeMode.light : ThemeMode.dark);
+    _restoreFocus();
+  }
 
-  void _restoreFocus() {
+  void _toggleMasking() {
+    final settings = ref.read(settingsProvider);
+    ref.read(settingsProvider.notifier).setMaskSecrets(!settings.maskSecrets);
+    _hideRevealed();
+    _restoreFocus();
+  }
+
+  void _showStorageNotices() {
     if (!mounted) return;
-    if (!_searchFocusNode.hasFocus && !_isTitleEditing) {
-      _listFocusNode.requestFocus();
+    final report = ref.read(storageReportProvider);
+    if (report.unreadableBackup != null) {
+      _showSnackBar(
+        'Saved items could not be unlocked, so Pastee started a new list. '
+        'The old file was kept at ${report.unreadableBackup}.',
+        duration: const Duration(seconds: 12),
+      );
+    } else if (report.migratedCount > 0) {
+      final n = report.migratedCount;
+      _showSnackBar(
+          'Moved $n ${n == 1 ? 'item' : 'items'} into encrypted storage',
+          duration: const Duration(seconds: 4));
     }
   }
 
-  void _focusSearch() => _searchFocusNode.requestFocus();
-
-  void _showSnackBar(String message) {
-    ScaffoldMessenger.of(context).clearSnackBars();
-    ScaffoldMessenger.of(context).showSnackBar(
+  void _showSnackBar(String message,
+      {Duration? duration, SnackBarAction? action}) {
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    final available = MediaQuery.sizeOf(context).width - 32;
+    final wanted = message.length > 44 || action != null ? 440.0 : 300.0;
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
       SnackBar(
         content: Text(message),
         behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 1),
-        width: 280,
+        duration: duration ?? const Duration(seconds: 1),
+        width: math.max(160, math.min(wanted, available)),
+        action: action,
       ),
     );
   }
 
-  // ── platform ─────────────────────────────────────────────
-
-  bool get _isMacOS {
-    try {
-      return Platform.isMacOS;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  bool get _isModifierKey => _isMacOS
-      ? HardwareKeyboard.instance.isMetaPressed
-      : HardwareKeyboard.instance.isControlPressed;
+  // ── keyboard ─────────────────────────────────────────────
 
   static final _digitKeys = {
     LogicalKeyboardKey.digit1: 1,
@@ -218,37 +425,67 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     LogicalKeyboardKey.digit9: 9,
   };
 
-  // ── key handler ──────────────────────────────────────────
+  /// ⌘ on macOS, Ctrl on Windows. AltGr reaches apps as Ctrl+Alt and types
+  /// characters such as @ { [ on many layouts, so Ctrl+Alt doesn't count.
+  bool get _primaryModifierPressed {
+    final keyboard = HardwareKeyboard.instance;
+    if (isMacPlatform) return keyboard.isMetaPressed;
+    return keyboard.isControlPressed && !keyboard.isAltPressed;
+  }
 
   KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
-      return KeyEventResult.ignored;
+    if (event is KeyUpEvent) return KeyEventResult.ignored;
+
+    final inSearch = _searchFocusNode.hasFocus;
+    final inTitle = _isTitleEditing;
+
+    // Holding a key never repeats an action: one press, one paste, copy or
+    // delete. Text fields still get repeats (holding Backspace keeps erasing).
+    if (event is KeyRepeatEvent) {
+      return inSearch || inTitle
+          ? KeyEventResult.ignored
+          : KeyEventResult.handled;
     }
 
     final key = event.logicalKey;
 
-    // Modifier shortcuts
-    if (_isModifierKey) {
-      // Cmd+F always works
+    if (_primaryModifierPressed) {
       if (key == LogicalKeyboardKey.keyF) {
         _focusSearch();
         return KeyEventResult.handled;
       }
-
-      // Cmd+E always edits first item title
       if (key == LogicalKeyboardKey.keyE) {
         _editFirstTitle();
         return KeyEventResult.handled;
       }
+      if (key == LogicalKeyboardKey.comma) {
+        _openSettings();
+        return KeyEventResult.handled;
+      }
+      if (key == LogicalKeyboardKey.keyR) {
+        _toggleRevealFirst();
+        return KeyEventResult.handled;
+      }
 
-      // While editing a title, let text field handle Cmd+C/V/A/X natively
-      if (_isTitleEditing) return KeyEventResult.ignored;
+      // The title field handles its own copy, paste, cut and undo.
+      if (inTitle) return KeyEventResult.ignored;
 
-      // Modifier + digit → copy Nth extracted field from first item
       final digit = _digitKeys[key];
       if (digit != null) {
-        _copyExtractedField(digit);
+        _copyFieldOfFirst(digit - 1);
         return KeyEventResult.handled;
+      }
+
+      if (inSearch) {
+        // Cut, paste, select-all and undo edit the search text. Copy does too
+        // when text is selected; otherwise it copies the top result.
+        final selection = _searchController.selection;
+        final hasSelection = selection.isValid && !selection.isCollapsed;
+        if (key == LogicalKeyboardKey.keyC && !hasSelection) {
+          _copyFirstItem();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
       }
 
       if (key == LogicalKeyboardKey.keyV) {
@@ -263,30 +500,40 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         _cutFirstItem();
         return KeyEventResult.handled;
       }
+      if (key == LogicalKeyboardKey.keyZ) {
+        _undo();
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
     }
 
-    // Escape from title editing
-    if (_isTitleEditing) {
+    // The tile handles Enter and Escape while renaming.
+    if (inTitle) return KeyEventResult.ignored;
+
+    final isEnter = key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter;
+
+    if (inSearch) {
       if (key == LogicalKeyboardKey.escape) {
+        _clearSearch();
+        _listFocusNode.requestFocus();
+        setState(() {});
+        return KeyEventResult.handled;
+      }
+      if (isEnter) {
+        _copyFirstItem();
+        return KeyEventResult.handled;
+      }
+      if (key == LogicalKeyboardKey.arrowDown) {
         _listFocusNode.requestFocus();
         return KeyEventResult.handled;
       }
       return KeyEventResult.ignored;
     }
 
-    // Escape from search
-    if (_searchFocusNode.hasFocus) {
-      if (key == LogicalKeyboardKey.escape) {
-        _searchController.clear();
-        ref.read(searchQueryProvider.notifier).state = '';
-        _listFocusNode.requestFocus();
-        return KeyEventResult.handled;
-      }
-      return KeyEventResult.ignored;
-    }
-
-    // Non-modifier shortcuts (list focused)
+    // The list has focus.
     if (key == LogicalKeyboardKey.escape) {
+      if (ref.read(summonedProvider)) _hideWindow();
       return KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.delete ||
@@ -294,7 +541,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       _deleteFirstItem();
       return KeyEventResult.handled;
     }
-
+    if (isEnter) {
+      _copyFirstItem();
+      return KeyEventResult.handled;
+    }
+    final character = event.character;
+    final keyboard = HardwareKeyboard.instance;
+    if (character != null &&
+        character.trim().isNotEmpty &&
+        !character.runes.any((r) => r < 0x20 || r == 0x7F) &&
+        !keyboard.isControlPressed &&
+        !keyboard.isMetaPressed) {
+      _typeIntoSearch(character);
+      return KeyEventResult.handled;
+    }
     return KeyEventResult.ignored;
   }
 
@@ -303,7 +563,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final items = ref.watch(filteredPasteListProvider);
-    final isDark = ref.watch(themeProvider);
+    final settings = ref.watch(settingsProvider);
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
@@ -315,7 +575,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         backgroundColor: colorScheme.surface,
         body: Column(
           children: [
-            _buildHeader(theme, colorScheme, isDark, items.length),
+            _buildHeader(theme, colorScheme, items.length),
             Expanded(
               child: items.isEmpty
                   ? _buildEmptyState(theme, colorScheme)
@@ -329,28 +589,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         return PasteTile(
                           key: ValueKey(item.id),
                           item: item,
+                          extraction: FieldExtractor.extract(item.content),
                           isFirst: isFirst,
-                          flashGeneration: item.id == _flashItemId
-                              ? _flashGeneration
-                              : 0,
-                          flashFieldIndex: item.id == _flashItemId
-                              ? _flashFieldIndex
-                              : -1,
-                          editGeneration:
-                              isFirst ? _editGeneration : 0,
-                          onTap: () =>
-                              _onItemTap(item.id, item.content),
+                          maskSecrets: settings.maskSecrets,
+                          revealed: _revealed.containsKey(item.id),
+                          flashGeneration:
+                              item.id == _flashItemId ? _flashGeneration : 0,
+                          flashFieldIndex:
+                              item.id == _flashItemId ? _flashFieldIndex : -1,
+                          editGeneration: isFirst ? _editGeneration : 0,
+                          onTap: () => _copyItem(item),
                           onTitleChanged: (t) => ref
                               .read(pasteListProvider.notifier)
                               .updateTitle(item.id, t),
-                          onFieldCopy: (v, fi) =>
-                              _copyFieldValue(v, item.id, fi),
-                          onDelete: () => ref
-                              .read(pasteListProvider.notifier)
-                              .deleteItem(item.id),
+                          onFieldCopy: (_, fieldIndex) =>
+                              _copyField(item, fieldIndex),
+                          onDelete: () => _deleteItem(item),
+                          onToggleReveal: () => _toggleReveal(item.id),
+                          onToggleSensitive: () => _toggleSensitive(item),
                           onEditingChanged: (editing) {
-                            setState(
-                                () => _isTitleEditing = editing);
+                            if (!mounted) return;
+                            setState(() => _isTitleEditing = editing);
                             if (!editing) _restoreFocus();
                           },
                         );
@@ -358,6 +617,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     ),
             ),
             _buildSearchBar(theme, colorScheme),
+            _buildHints(),
           ],
         ),
       ),
@@ -366,20 +626,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   // ── header ───────────────────────────────────────────────
 
-  Widget _buildHeader(
-    ThemeData theme,
-    ColorScheme colorScheme,
-    bool isDark,
-    int itemCount,
-  ) {
-    final mod = _isMacOS ? '⌘' : '^';
+  Widget _buildHeader(ThemeData theme, ColorScheme colorScheme, int itemCount) {
+    final hotKey = ref.watch(hotKeyProvider);
+    final maskSecrets =
+        ref.watch(settingsProvider.select((s) => s.maskSecrets));
+    final isDark = theme.brightness == Brightness.dark;
+    final spec = hotKey.spec;
+
     return Container(
-      padding: const EdgeInsets.fromLTRB(20, 16, 12, 12),
+      padding: const EdgeInsets.fromLTRB(20, 14, 10, 10),
       decoration: BoxDecoration(
         color: colorScheme.surface,
         border: Border(
           bottom: BorderSide(
-              color: colorScheme.outlineVariant.withOpacity(0.3)),
+              color: colorScheme.outlineVariant.withValues(alpha: 0.3)),
         ),
       ),
       child: Row(
@@ -389,8 +649,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           const SizedBox(width: 10),
           Text('Pastee',
               style: theme.textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.w700,
-                  color: colorScheme.onSurface)),
+                  fontWeight: FontWeight.w700, color: colorScheme.onSurface)),
           const SizedBox(width: 10),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
@@ -403,141 +662,148 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     color: colorScheme.onPrimaryContainer,
                     fontWeight: FontWeight.w600)),
           ),
-          const Spacer(),
-          _hint(colorScheme, '${mod}V', 'Paste'),
-          const SizedBox(width: 6),
-          _hint(colorScheme, '${mod}C', 'Copy'),
-          const SizedBox(width: 6),
-          _hint(colorScheme, '${mod}1-9', 'Field'),
-          const SizedBox(width: 6),
-          _hint(colorScheme, '${mod}X', 'Cut'),
-          const SizedBox(width: 6),
-          _hint(colorScheme, '${mod}E', 'Edit'),
-          const SizedBox(width: 6),
-          _hint(colorScheme, '${mod}F', 'Find'),
-          const SizedBox(width: 10),
-          Tooltip(
-            message:
-                isDark ? 'Switch to light mode' : 'Switch to dark mode',
-            child: SizedBox(
-              width: 34,
-              height: 34,
-              child: Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(6),
-                  canRequestFocus: false,
-                  onTap: () {
-                    ref.read(themeProvider.notifier).toggle();
-                    _restoreFocus();
-                  },
-                  child: Center(
-                    child: Icon(
-                        isDark
-                            ? Icons.light_mode_outlined
-                            : Icons.dark_mode_outlined,
-                        size: 20,
-                        color: colorScheme.onSurfaceVariant),
+          if (hotKey.active && spec != null)
+            // Right-aligned in the free space, and scaled down rather than
+            // overflowing if a long custom shortcut meets a narrow window.
+            Expanded(
+              child: LayoutBuilder(
+                builder: (context, constraints) => Align(
+                  alignment: Alignment.centerRight,
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Tooltip(
+                      message:
+                          'Press ${spec.display} in any app to show or hide Pastee',
+                      child: KeyCap(
+                        spec.display,
+                        label: constraints.maxWidth >= 150 ? 'Summon' : null,
+                        emphasized: true,
+                      ),
+                    ),
                   ),
                 ),
               ),
-            ),
+            )
+          else ...[
+            const Spacer(),
+            if (hotKey.error != null)
+              _HeaderButton(
+                icon: Icons.keyboard_alt_outlined,
+                tooltip:
+                    'The summon shortcut isn’t working. Click to pick another.',
+                color: colorScheme.error,
+                onTap: _openSettings,
+              ),
+          ],
+          const SizedBox(width: 6),
+          _HeaderButton(
+            icon: maskSecrets
+                ? Icons.visibility_off_outlined
+                : Icons.visibility_outlined,
+            tooltip: maskSecrets
+                ? 'Passwords and secrets are hidden. Click to show them.'
+                : 'Passwords and secrets are visible. Click to hide them.',
+            onTap: _toggleMasking,
+          ),
+          _HeaderButton(
+            icon: isDark ? Icons.light_mode_outlined : Icons.dark_mode_outlined,
+            tooltip: isDark ? 'Switch to light mode' : 'Switch to dark mode',
+            onTap: _toggleTheme,
+          ),
+          _HeaderButton(
+            icon: Icons.settings_outlined,
+            tooltip: 'Settings (${primaryShortcut(',')})',
+            onTap: _openSettings,
           ),
         ],
       ),
     );
   }
 
-  Widget _hint(ColorScheme cs, String keys, String label) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
-      decoration: BoxDecoration(
-        color: cs.surfaceVariant.withOpacity(0.5),
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: cs.outlineVariant.withOpacity(0.3)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(keys,
-              style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w600,
-                  fontFamily: 'monospace',
-                  color: cs.onSurfaceVariant.withOpacity(0.7))),
-          const SizedBox(width: 3),
-          Text(label,
-              style: TextStyle(
-                  fontSize: 10,
-                  color: cs.onSurfaceVariant.withOpacity(0.5))),
-        ],
-      ),
-    );
-  }
-
-  // ── empty / search ───────────────────────────────────────
+  // ── empty / search / hints ───────────────────────────────
 
   Widget _buildEmptyState(ThemeData theme, ColorScheme colorScheme) {
+    final searching = ref.watch(searchQueryProvider).isNotEmpty;
+    final hotKey = ref.watch(hotKeyProvider);
+    final faded = colorScheme.onSurfaceVariant;
     return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.content_paste_off_outlined,
-              size: 64,
-              color: colorScheme.onSurfaceVariant.withOpacity(0.3)),
-          const SizedBox(height: 16),
-          Text('No items yet',
-              style: theme.textTheme.titleMedium?.copyWith(
-                  color: colorScheme.onSurfaceVariant.withOpacity(0.5))),
-          const SizedBox(height: 8),
-          Text(
-              _isMacOS
-                  ? 'Press ⌘V to paste from clipboard'
-                  : 'Press Ctrl+V to paste from clipboard',
-              style: theme.textTheme.bodySmall?.copyWith(
-                  color: colorScheme.onSurfaceVariant.withOpacity(0.4))),
-        ],
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+                searching ? Icons.search_off : Icons.content_paste_off_outlined,
+                size: 64,
+                color: faded.withValues(alpha: 0.3)),
+            const SizedBox(height: 16),
+            Text(searching ? 'Nothing matches your search' : 'No items yet',
+                style: theme.textTheme.titleMedium
+                    ?.copyWith(color: faded.withValues(alpha: 0.5))),
+            const SizedBox(height: 8),
+            Text(
+              searching
+                  ? 'Press Esc to clear the search'
+                  : 'Copy something, then press ${primaryShortcut('V')} here to save it',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: faded.withValues(alpha: 0.5)),
+            ),
+            if (!searching && hotKey.active && hotKey.spec != null) ...[
+              const SizedBox(height: 4),
+              Text(
+                'Press ${hotKey.spec!.display} in any app to bring Pastee back',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: faded.withValues(alpha: 0.5)),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }
 
   Widget _buildSearchBar(ThemeData theme, ColorScheme colorScheme) {
     return Container(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
       decoration: BoxDecoration(
         color: colorScheme.surface,
         border: Border(
           top: BorderSide(
-              color: colorScheme.outlineVariant.withOpacity(0.3)),
+              color: colorScheme.outlineVariant.withValues(alpha: 0.3)),
         ),
       ),
       child: TextField(
         controller: _searchController,
         focusNode: _searchFocusNode,
-        onChanged: _onSearchChanged,
-        style: theme.textTheme.bodyMedium
-            ?.copyWith(color: colorScheme.onSurface),
+        onChanged: (query) {
+          _onSearchChanged(query);
+          setState(() {});
+        },
+        style:
+            theme.textTheme.bodyMedium?.copyWith(color: colorScheme.onSurface),
         decoration: InputDecoration(
-          hintText: 'Search items… (${_isMacOS ? "⌘F" : "Ctrl+F"})',
+          hintText: 'Search… (${primaryShortcut('F')}, or just start typing)',
           hintStyle: TextStyle(
-              color: colorScheme.onSurfaceVariant.withOpacity(0.4),
+              color: colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
               fontSize: 13),
           prefixIcon: Icon(Icons.search,
               size: 20,
-              color: colorScheme.onSurfaceVariant.withOpacity(0.5)),
+              color: colorScheme.onSurfaceVariant.withValues(alpha: 0.5)),
           suffixIcon: _searchController.text.isNotEmpty
-              ? GestureDetector(
-                  onTap: () {
-                    _searchController.clear();
-                    ref.read(searchQueryProvider.notifier).state = '';
+              ? IconButton(
+                  tooltip: 'Clear search',
+                  icon: const Icon(Icons.clear, size: 18),
+                  onPressed: () {
+                    _clearSearch();
                     setState(() {});
                   },
-                  child: const Icon(Icons.clear, size: 18),
                 )
               : null,
           isDense: true,
           filled: true,
-          fillColor: colorScheme.surfaceVariant.withOpacity(0.4),
+          fillColor: colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
           contentPadding:
               const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           border: OutlineInputBorder(
@@ -546,8 +812,70 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(10),
               borderSide: BorderSide(
-                  color: colorScheme.primary.withOpacity(0.5),
+                  color: colorScheme.primary.withValues(alpha: 0.5),
                   width: 1.5)),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHints() {
+    final hints = [
+      (primaryShortcut('V'), 'Paste'),
+      (primaryShortcut('C'), 'Copy'),
+      (primaryShortcut('1–9'), 'Field'),
+      (primaryShortcut('X'), 'Cut'),
+      (primaryShortcut('Z'), 'Undo'),
+      (primaryShortcut('F'), 'Find'),
+      (primaryShortcut(','), 'Settings'),
+    ];
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            for (final (keys, label) in hints) KeyCap(keys, label: label)
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HeaderButton extends StatelessWidget {
+  const _HeaderButton({
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+    this.color,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onTap;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Tooltip(
+      message: tooltip,
+      child: SizedBox(
+        width: 34,
+        height: 34,
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(6),
+            canRequestFocus: false,
+            onTap: onTap,
+            child: Center(
+              child: Icon(icon, size: 20, color: color ?? cs.onSurfaceVariant),
+            ),
+          ),
         ),
       ),
     );

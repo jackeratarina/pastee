@@ -1,0 +1,168 @@
+name: Build
+
+# Every push and pull request: analyze, test, and build the macOS and Windows
+# apps. Pushing a tag like v1.1.0 also publishes them as a GitHub release.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  FLUTTER_VERSION: '3.47.9'
+
+jobs:
+  test:
+    name: Analyze and test
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Read the version from pubspec.yaml
+        id: version
+        run: |
+          version=$(sed -n 's/^version: *\([0-9][0-9.]*\).*/\1/p' pubspec.yaml)
+          if [[ "$GITHUB_REF" == refs/tags/v* && "${GITHUB_REF#refs/tags/v}" != "$version" ]]; then
+            echo "::error::Tag ${GITHUB_REF#refs/tags/} does not match version $version in pubspec.yaml"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+
+  macos:
+    name: macOS app
+    needs: test
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.test.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - name: Build
+        run: >
+          flutter build macos --release
+          --build-name "$VERSION" --build-number "$GITHUB_RUN_NUMBER"
+          --dart-define=PASTEE_VERSION="$VERSION"
+      - name: Check the app bundle
+        run: |
+          APP=build/macos/Build/Products/Release/Pastee.app
+          test -d "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          echo "Architectures: $(lipo -archs "$APP/Contents/MacOS/Pastee")"
+          /usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Contents/Info.plist"
+          codesign -d --entitlements - "$APP" || true
+      - name: Package
+        run: |
+          APP=build/macos/Build/Products/Release/Pastee.app
+          mkdir -p dist/dmg
+          cp -R "$APP" dist/dmg/
+          ln -s /Applications dist/dmg/Applications
+          # hdiutil is occasionally "busy" on CI machines.
+          for attempt in 1 2 3; do
+            hdiutil create -volname "Pastee" -srcfolder dist/dmg -ov -format UDZO \
+              "dist/Pastee-$VERSION-macos.dmg" && break
+            echo "hdiutil failed (attempt $attempt), retrying"
+            sleep 10
+          done
+          test -f "dist/Pastee-$VERSION-macos.dmg"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/Pastee-$VERSION-macos.zip"
+          rm -rf dist/dmg
+          ls -la dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pastee-macos
+          path: dist/*
+          if-no-files-found: error
+
+  windows:
+    name: Windows app
+    needs: test
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.test.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      # Also covers the DPAPI key protection, which only exists on Windows.
+      - run: flutter test
+      - name: Build
+        run: >
+          flutter build windows --release
+          --build-name "$env:VERSION" --build-number "$env:GITHUB_RUN_NUMBER"
+          --dart-define=PASTEE_VERSION="$env:VERSION"
+      - name: Package
+        run: |
+          $release = "build\windows\x64\runner\Release"
+          if (-not (Test-Path "$release\pastee.exe")) { throw "pastee.exe was not built" }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path "$release\*" -DestinationPath "dist\Pastee-$env:VERSION-windows-x64.zip"
+          choco upgrade innosetup -y --no-progress
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" windows\installer\pastee.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+          Get-ChildItem dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pastee-windows
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish the release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.test.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: pastee-*
+          path: dist
+          merge-multiple: true
+      - name: Write the release notes
+        run: |
+          # The CHANGELOG section for this version, then the install guide.
+          awk -v v="$VERSION" '
+            index($0, "## " v) == 1 { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          cat .github/release-install.md >> notes.md
+          (cd dist && sha256sum * > SHA256SUMS.txt)
+          cat notes.md
+          ls -la dist
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "v$VERSION" dist/*
+          --title "Pastee $VERSION" --notes-file notes.md --verify-tag
