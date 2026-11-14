@@ -387,6 +387,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     setState(() => _editGeneration++);
   }
 
+  void _lockNow() {
+    if (ref.read(appLockProvider).enabled) {
+      ref.read(appLockProvider.notifier).lock();
+    } else {
+      _showSnackBar(
+        'Set a passcode in Settings to lock Pastee',
+        duration: const Duration(seconds: 4),
+        action: SnackBarAction(label: 'Settings', onPressed: _openSettings),
+      );
+    }
+  }
+
   void _toggleTheme() {
     final dark = Theme.of(context).brightness == Brightness.dark;
     ref
@@ -493,6 +505,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       }
       if (key == LogicalKeyboardKey.keyR) {
         _toggleRevealFirst();
+        return KeyEventResult.handled;
+      }
+      if (key == LogicalKeyboardKey.keyL) {
+        _lockNow();
         return KeyEventResult.handled;
       }
 
@@ -739,6 +755,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             tooltip: isDark ? 'Switch to light mode' : 'Switch to dark mode',
             onTap: _toggleTheme,
           ),
+          if (ref.watch(appLockProvider.select((s) => s.enabled)))
+            _HeaderButton(
+              icon: Icons.lock_outline,
+              tooltip: 'Lock Pastee (${primaryShortcut('L')})',
+              onTap: _lockNow,
+            ),
           _HeaderButton(
             icon: Icons.settings_outlined,
             tooltip: 'Settings (${primaryShortcut(',')})',

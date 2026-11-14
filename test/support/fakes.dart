@@ -10,6 +10,8 @@ import 'package:pastee/model/paste_item.dart';
 import 'package:pastee/providers/providers.dart';
 import 'package:pastee/services/clipboard_service.dart';
 import 'package:pastee/services/desktop_bridge.dart';
+import 'package:pastee/services/device_auth.dart';
+import 'package:pastee/services/passcode.dart';
 import 'package:pastee/services/paste_titles.dart';
 import 'package:pastee/services/storage_service.dart';
 
@@ -62,6 +64,42 @@ class FakeBridge implements DesktopBridge {
   Future<void> hideWindow() async => hideCalls++;
 }
 
+class FakeAuthenticator implements DeviceAuthenticator {
+  FakeAuthenticator(
+      {this.available = true, this.succeeds = true, this.name = 'Touch ID'});
+
+  bool available;
+  bool succeeds;
+  final String name;
+  int prompts = 0;
+
+  @override
+  Future<bool> isAvailable() async => available;
+
+  @override
+  Future<String> displayName() async => name;
+
+  @override
+  Future<bool> authenticate(String reason) async {
+    prompts++;
+    return succeeds;
+  }
+}
+
+/// Low PBKDF2 rounds keep tests fast; the real app uses 120k.
+const testIterations = 1000;
+
+/// Settings that turn App Lock on with [passcode].
+Future<Map<String, Object?>> lockedSettings(String passcode,
+    {bool deviceUnlock = false, String timeout = 'fiveMinutes'}) async {
+  final hash = await PasscodeHash.create(passcode, iterations: testIterations);
+  return {
+    'lock.passcode': hash.toJson(),
+    'lock.deviceUnlock': deviceUnlock,
+    'lock.timeout': timeout,
+  };
+}
+
 PasteItem makeItem(String content,
     {String? id, int minutesAgo = 0, bool sensitive = false}) {
   return PasteItem(
@@ -79,15 +117,18 @@ class TestApp {
     Map<String, Object?>? settings,
     FakeClipboard? clipboard,
     FakeBridge? bridge,
+    FakeAuthenticator? authenticator,
   })  : store = MemoryPasteStore(items),
         settingsStore = MemorySettingsStore(settings),
         clipboard = clipboard ?? FakeClipboard(),
-        bridge = bridge ?? FakeBridge();
+        bridge = bridge ?? FakeBridge(),
+        authenticator = authenticator ?? FakeAuthenticator(available: false);
 
   final MemoryPasteStore store;
   final MemorySettingsStore settingsStore;
   final FakeClipboard clipboard;
   final FakeBridge bridge;
+  final FakeAuthenticator authenticator;
   late ProviderContainer container;
 
   Future<void> pump(WidgetTester tester) async {
@@ -100,6 +141,8 @@ class TestApp {
           settingsStoreProvider.overrideWithValue(settingsStore),
           clipboardServiceProvider.overrideWithValue(clipboard),
           desktopBridgeProvider.overrideWithValue(bridge),
+          deviceAuthenticatorProvider.overrideWithValue(authenticator),
+          passcodeIterationsProvider.overrideWithValue(testIterations),
           storageReportProvider.overrideWithValue(const StorageReport(
               dataPath: '/tmp/pastee-test', encrypted: true)),
         ],

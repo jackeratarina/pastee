@@ -5,7 +5,7 @@
 This build isn't signed with an Apple Developer ID, so the first time you open it macOS says it can't check it for malware:
 
 1. Open Pastee once and click **Done** on the warning.
-2. Go to **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to the Pastee message.
+2. Go to **System Settings → Privacy & Security** (on macOS 12: **System Preferences → Security & Privacy → General**), scroll down and click **Open Anyway** next to the Pastee message.
 3. Open Pastee again and confirm.
 
 (Or, in Terminal: `xattr -dr com.apple.quarantine /Applications/Pastee.app`.)

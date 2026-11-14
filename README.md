@@ -35,6 +35,7 @@ The builds are not code-signed yet, so the first launch shows a warning:
 - **Summon from anywhere.** Press **⌃⌘V** (macOS) or **Alt+Shift+V** (Windows) in any app to show or hide Pastee. Copy a field and Pastee hides itself again, so your next paste lands where you were.
 - **Clipboard capture.** Paste anything with `⌘V` / `Ctrl+V`. Duplicates are detected and skipped.
 - **Smart field extraction.** Up to 9 copyable fields per item: passwords, usernames, emails, links, phone numbers, order and invoice numbers, IP addresses, API keys, card numbers, one-time codes, and any `Key: value` line. English and Vietnamese labels.
+- **App Lock.** Ask for a passcode, Touch ID or Windows Hello before Pastee shows anything: when it starts, and again after a time away that you choose. `⌘L` locks it right away.
 - **Password masking.** Detected secrets show as `••••••••` everywhere until you click the eye. Copying always gets the real value. Mark any item **always hidden** with the lock.
 - **Instant copy.** `⌘C` copies the top item, `⌘1`–`⌘9` copies one of its fields, and `Enter` copies the top search result.
 - **Cut, delete, undo.** `⌘X` cuts the top item, `Delete` removes it, and `⌘Z` brings it back.
@@ -60,6 +61,7 @@ On Windows, use `Ctrl` wherever macOS uses `⌘`.
 | `⌘E` | Rename the top item |
 | `⌘R` | Show or hide the top item's masked text |
 | `⌘F`, or just type | Search |
+| `⌘L` | Lock Pastee (when App Lock is on) |
 | `⌘,` | Settings |
 | `Esc` | Clear the search, cancel renaming, or hide a summoned Pastee |
 
@@ -88,11 +90,12 @@ To have Pastee ready after you log in, add it under **System Settings → Genera
 - On Windows, the encryption key is protected with DPAPI, so only your Windows account on this PC can unlock it.
 - On macOS, the key sits next to the data in your private Library folder. A copy of the data file on its own can't be read, but software running as you could read both. (Unsigned Mac apps can't use the keychain or the App Sandbox without macOS asking for permission after every update, so Pastee uses neither until it has a signed build.)
 - Pastee 1.0 kept an unencrypted file in Documents (on macOS, inside its sandbox container). 1.1 moves those items into encrypted storage on first launch and deletes the old file. On macOS, the system may ask once whether Pastee can access data from other apps: that's the old container.
+- **App Lock** (Settings → App Lock) puts a passcode in front of Pastee, optionally with Touch ID (or your Mac password) or Windows Hello. It locks when Pastee starts and again after the time away you pick, from "as soon as it's hidden" to "only when Pastee starts". Pastee keeps only a salted PBKDF2 hash of the passcode, and repeated wrong guesses add a wait that a restart doesn't reset. If you forget the passcode, the lock screen can erase your items and turn the lock off; Pastee can't recover it. App Lock keeps people at your computer out of Pastee. Your items are already encrypted on disk.
 - Masking hides secrets on screen (screen sharing, someone looking over your shoulder). Anything you copy is a normal clipboard entry.
 
 ## Build from source
 
-Requires [Flutter](https://docs.flutter.dev/get-started/install) 3.47 or later, plus Xcode (macOS) or Visual Studio with "Desktop development with C++" (Windows).
+Requires [Flutter](https://docs.flutter.dev/get-started/install) 3.47 or later, plus Xcode (macOS) or Visual Studio 2022 with "Desktop development with C++" (Windows). The first Windows build downloads two NuGet packages for Windows Hello support, so it needs internet access.
 
 ```bash
 git clone https://github.com/jackeratarina/pastee.git

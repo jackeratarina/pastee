@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'providers/providers.dart';
 import 'services/storage_service.dart';
 import 'ui/home_screen.dart';
+import 'ui/lock_screen.dart';
 import 'ui/theme.dart';
 
 Future<void> main() async {
@@ -44,7 +45,7 @@ class PasteeApp extends ConsumerWidget {
       theme: AppTheme.light(),
       darkTheme: AppTheme.dark(),
       themeMode: themeMode,
-      home: const HomeScreen(),
+      home: const LockGate(child: HomeScreen()),
     );
   }
 }

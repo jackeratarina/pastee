@@ -7,9 +7,12 @@ import 'package:uuid/uuid.dart';
 import '../model/app_settings.dart';
 import '../model/hotkey.dart';
 import '../model/paste_item.dart';
+import '../services/app_lock.dart';
 import '../services/clipboard_service.dart';
 import '../services/desktop_bridge.dart';
+import '../services/device_auth.dart';
 import '../services/field_extractor.dart';
+import '../services/passcode.dart';
 import '../services/paste_titles.dart';
 import '../services/storage_service.dart';
 
@@ -28,6 +31,24 @@ final clipboardServiceProvider =
 
 final desktopBridgeProvider =
     Provider<DesktopBridge>((ref) => MethodChannelDesktopBridge());
+
+final deviceAuthenticatorProvider =
+    Provider<DeviceAuthenticator>((ref) => LocalAuthAuthenticator());
+
+/// PBKDF2 rounds for the App Lock passcode; tests turn this down.
+final passcodeIterationsProvider =
+    Provider<int>((ref) => PasscodeHash.defaultIterations);
+
+// ── App Lock ─────────────────────────────────────────────────────────────
+
+final appLockProvider =
+    StateNotifierProvider<AppLockNotifier, AppLockState>((ref) {
+  return AppLockNotifier(
+    ref.watch(settingsStoreProvider),
+    ref.watch(deviceAuthenticatorProvider),
+    iterations: ref.watch(passcodeIterationsProvider),
+  );
+});
 
 // ── settings ─────────────────────────────────────────────────────────────
 
