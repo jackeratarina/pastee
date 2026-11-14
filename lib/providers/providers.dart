@@ -1,35 +1,156 @@
 import 'dart:async';
 
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:pastee/model/paste_item.dart';
-import 'package:pastee/services/clipboard_service.dart';
-import 'package:pastee/services/storage_service.dart';
 import 'package:uuid/uuid.dart';
 
-final storageServiceProvider = Provider<StorageService>((ref) {
-  return StorageService();
+import '../model/app_settings.dart';
+import '../model/hotkey.dart';
+import '../model/paste_item.dart';
+import '../services/clipboard_service.dart';
+import '../services/desktop_bridge.dart';
+import '../services/paste_titles.dart';
+import '../services/storage_service.dart';
+
+// ── services (overridden in main.dart and in tests) ───────────────────────
+
+final pasteStoreProvider = Provider<PasteStore>((ref) => MemoryPasteStore());
+
+final settingsStoreProvider =
+    Provider<SettingsStore>((ref) => MemorySettingsStore());
+
+final storageReportProvider =
+    Provider<StorageReport>((ref) => const StorageReport());
+
+final clipboardServiceProvider =
+    Provider<ClipboardService>((ref) => const ClipboardService());
+
+final desktopBridgeProvider =
+    Provider<DesktopBridge>((ref) => MethodChannelDesktopBridge());
+
+// ── settings ─────────────────────────────────────────────────────────────
+
+final settingsProvider =
+    StateNotifierProvider<SettingsNotifier, AppSettings>((ref) {
+  return SettingsNotifier(ref.watch(settingsStoreProvider));
 });
 
-final clipboardServiceProvider = Provider<ClipboardService>((ref) {
-  return ClipboardService();
-});
+class SettingsNotifier extends StateNotifier<AppSettings> {
+  SettingsNotifier(this._store) : super(_load(_store));
 
-final themeProvider = StateNotifierProvider<ThemeNotifier, bool>((ref) {
-  return ThemeNotifier();
-});
+  final SettingsStore _store;
 
-class ThemeNotifier extends StateNotifier<bool> {
-  ThemeNotifier() : super(false);
+  static const _kTheme = 'themeMode';
+  static const _kHotKey = 'summonHotKey';
+  static const _kHideAfterCopy = 'hideAfterCopy';
+  static const _kMaskSecrets = 'maskSecrets';
 
-  void toggle() => state = !state;
+  static AppSettings _load(SettingsStore store) {
+    final theme = store.read(_kTheme);
+    final hotKey = store.read(_kHotKey);
+    return AppSettings(
+      themeMode: ThemeMode.values.firstWhere(
+        (m) => m.name == theme,
+        orElse: () => ThemeMode.system,
+      ),
+      // Never set: use the recommended shortcut. 'off': the user turned it off.
+      summonHotKey: hotKey == null
+          ? defaultHotKey()
+          : hotKey == 'off'
+              ? null
+              : HotKeySpec.fromJson(hotKey) ?? defaultHotKey(),
+      hideAfterCopy: store.read(_kHideAfterCopy) as bool? ?? true,
+      maskSecrets: store.read(_kMaskSecrets) as bool? ?? true,
+    );
+  }
+
+  Future<void> setThemeMode(ThemeMode mode) async {
+    state = state.copyWith(themeMode: mode);
+    await _store.write(_kTheme, mode.name);
+  }
+
+  Future<void> setSummonHotKey(HotKeySpec? spec) async {
+    state = state.copyWith(summonHotKey: () => spec);
+    await _store.write(_kHotKey, spec?.toJson() ?? 'off');
+  }
+
+  Future<void> setHideAfterCopy(bool value) async {
+    state = state.copyWith(hideAfterCopy: value);
+    await _store.write(_kHideAfterCopy, value);
+  }
+
+  Future<void> setMaskSecrets(bool value) async {
+    state = state.copyWith(maskSecrets: value);
+    await _store.write(_kMaskSecrets, value);
+  }
 }
+
+// ── global shortcut ──────────────────────────────────────────────────────
+
+@immutable
+class HotKeyStatus {
+  const HotKeyStatus(
+      {this.spec, this.active = false, this.error, this.supported = true});
+
+  /// The shortcut Pastee tried to set, or null when it's off.
+  final HotKeySpec? spec;
+  final bool active;
+  final String? error;
+  final bool supported;
+}
+
+final hotKeyProvider =
+    StateNotifierProvider<HotKeyNotifier, HotKeyStatus>((ref) {
+  final notifier = HotKeyNotifier(ref.watch(desktopBridgeProvider));
+  ref.listen<HotKeySpec?>(
+    settingsProvider.select((s) => s.summonHotKey),
+    (_, spec) => notifier.apply(spec),
+    fireImmediately: true,
+  );
+  return notifier;
+});
+
+class HotKeyNotifier extends StateNotifier<HotKeyStatus> {
+  HotKeyNotifier(this._bridge)
+      : super(HotKeyStatus(supported: _bridge.isSupported));
+
+  final DesktopBridge _bridge;
+  HotKeySpec? _spec;
+
+  Future<void> apply(HotKeySpec? spec) async {
+    _spec = spec;
+    if (!_bridge.isSupported) {
+      state = HotKeyStatus(spec: spec, supported: false);
+      return;
+    }
+    if (spec == null) {
+      await _bridge.unregisterHotKey();
+      if (mounted) state = const HotKeyStatus();
+      return;
+    }
+    final result = await _bridge.registerHotKey(spec);
+    if (!mounted || _spec != spec) return;
+    state = HotKeyStatus(spec: spec, active: result.ok, error: result.error);
+  }
+
+  /// Releases the shortcut while the user records a new one, so pressing the
+  /// current combination doesn't hide the window mid-recording.
+  Future<void> pause() => _bridge.unregisterHotKey();
+
+  Future<void> resume() => apply(_spec);
+}
+
+/// True while Pastee is showing because the summon shortcut brought it up.
+/// Copying then hides it again (if that setting is on), and Escape hides it.
+final summonedProvider = StateProvider<bool>((ref) => false);
+
+// ── pastes ───────────────────────────────────────────────────────────────
 
 final searchQueryProvider = StateProvider<String>((ref) => '');
 
 final pasteListProvider =
     StateNotifierProvider<PasteListNotifier, List<PasteItem>>((ref) {
-  final storage = ref.watch(storageServiceProvider);
-  return PasteListNotifier(storage);
+  return PasteListNotifier(ref.watch(pasteStoreProvider));
 });
 
 final filteredPasteListProvider = Provider<List<PasteItem>>((ref) {
@@ -38,9 +159,8 @@ final filteredPasteListProvider = Provider<List<PasteItem>>((ref) {
   if (query.isEmpty) return items;
 
   return items.where((item) {
-    final titleMatch = item.title.toLowerCase().contains(query);
-    final contentMatch = item.content.toLowerCase().contains(query);
-    return titleMatch || contentMatch;
+    return item.title.toLowerCase().contains(query) ||
+        item.content.toLowerCase().contains(query);
   }).toList()
     ..sort((a, b) {
       final aTitle = a.title.toLowerCase().contains(query);
@@ -52,55 +172,66 @@ final filteredPasteListProvider = Provider<List<PasteItem>>((ref) {
 });
 
 class PasteListNotifier extends StateNotifier<List<PasteItem>> {
-  final StorageService _storage;
+  PasteListNotifier(this._store) : super(_store.getAll());
+
+  final PasteStore _store;
   static const _uuid = Uuid();
 
-  PasteListNotifier(this._storage) : super([]) {
-    _load();
+  PasteItem? findByContent(String text) {
+    for (final item in state) {
+      if (item.content == text) return item;
+    }
+    return null;
   }
 
-  void _load() {
-    state = _storage.getAll();
-  }
-
-  bool containsContent(String text) {
-    return state.any((item) => item.content == text);
-  }
-
-  Future<void> addFromClipboard(String text) async {
-    if (containsContent(text)) return;
-
-    final title = text.length > 30 ? text.substring(0, 30) : text;
+  /// Saves [text] as a new item, or returns null if it's already in the list.
+  Future<PasteItem?> addFromClipboard(String text) async {
+    if (findByContent(text) != null) return null;
     final item = PasteItem(
       id: _uuid.v4(),
-      title: title.replaceAll('\n', ' ').trim(),
+      title: autoTitle(text),
       content: text,
       createdAt: DateTime.now(),
     );
-    await _storage.add(item);
     state = [item, ...state];
+    await _store.put(item);
+    return item;
   }
 
-  Future<void> updateTitle(String id, String newTitle) async {
+  Future<void> updateTitle(String id, String newTitle) =>
+      _update(id, (item) => item.copyWith(title: newTitle));
+
+  Future<void> setSensitive(String id, bool sensitive) =>
+      _update(id, (item) => item.copyWith(sensitive: sensitive));
+
+  Future<void> _update(String id, PasteItem Function(PasteItem) change) async {
     final index = state.indexWhere((item) => item.id == id);
     if (index == -1) return;
-
-    final updated = state[index].copyWith(title: newTitle);
-    state = [
-      ...state.sublist(0, index),
-      updated,
-      ...state.sublist(index + 1),
-    ];
-    await _storage.update(updated);
+    final updated = change(state[index]);
+    state = [...state.sublist(0, index), updated, ...state.sublist(index + 1)];
+    await _store.put(updated);
   }
 
-  Future<void> deleteItem(String id) async {
-    await _storage.delete(id);
-    state = state.where((item) => item.id != id).toList();
+  /// Removes the item and returns it, so it can be restored with [restore].
+  Future<PasteItem?> deleteItem(String id) async {
+    final index = state.indexWhere((item) => item.id == id);
+    if (index == -1) return null;
+    final removed = state[index];
+    state = [...state.sublist(0, index), ...state.sublist(index + 1)];
+    await _store.delete(id);
+    return removed;
+  }
+
+  /// Puts a deleted item back where it was (the list is ordered by date).
+  Future<void> restore(PasteItem item) async {
+    if (state.any((existing) => existing.id == item.id)) return;
+    state = [...state, item]
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    await _store.put(item);
   }
 
   Future<void> clearAll() async {
-    await _storage.clear();
     state = [];
+    await _store.clear();
   }
 }

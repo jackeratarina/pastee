@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "com.pastee" "\0"
-            VALUE "FileDescription", "pastee" "\0"
+            VALUE "FileDescription", "Pastee" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "pastee" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 com.pastee. All rights reserved." "\0"
+            VALUE "InternalName", "Pastee" "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 Pastee contributors. MIT License." "\0"
             VALUE "OriginalFilename", "pastee.exe" "\0"
-            VALUE "ProductName", "pastee" "\0"
+            VALUE "ProductName", "Pastee" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END
