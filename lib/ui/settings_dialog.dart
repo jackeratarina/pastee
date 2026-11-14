@@ -4,8 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../model/hotkey.dart';
 import '../providers/providers.dart';
+import '../services/app_lock.dart';
 import '../version.dart';
 import 'key_cap.dart';
+import 'passcode_dialogs.dart';
 import 'shortcut_labels.dart';
 import 'theme.dart';
 
@@ -29,6 +31,8 @@ class _SettingsDialogState extends ConsumerState<SettingsDialog> {
   late final HotKeyNotifier _hotKeys = ref.read(hotKeyProvider.notifier);
   bool _recording = false;
   String? _recordMessage;
+  bool _deviceAvailable = false;
+  String _deviceName = 'Touch ID';
 
   static final _modifierKeys = <LogicalKeyboardKey>{
     LogicalKeyboardKey.controlLeft,
@@ -42,6 +46,70 @@ class _SettingsDialogState extends ConsumerState<SettingsDialog> {
     LogicalKeyboardKey.capsLock,
     LogicalKeyboardKey.fn,
   };
+
+  @override
+  void initState() {
+    super.initState();
+    _checkDevice();
+  }
+
+  Future<void> _checkDevice() async {
+    final device = ref.read(deviceAuthenticatorProvider);
+    final available = await device.isAvailable();
+    final name = available ? await device.displayName() : _deviceName;
+    if (mounted) {
+      setState(() {
+        _deviceAvailable = available;
+        _deviceName = name;
+      });
+    }
+  }
+
+  void _notify(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), width: 340),
+    );
+  }
+
+  Future<void> _setUpLock() async {
+    final passcode = await showNewPasscodeDialog(context);
+    if (passcode == null || !mounted) return;
+    await ref.read(appLockProvider.notifier).setPasscode(passcode);
+    if (mounted) _notify('App Lock is on');
+  }
+
+  Future<void> _changePasscode() async {
+    if (!await confirmPasscode(context, title: 'Change passcode')) return;
+    if (!mounted) return;
+    final passcode =
+        await showNewPasscodeDialog(context, title: 'New passcode');
+    if (passcode == null || !mounted) return;
+    await ref.read(appLockProvider.notifier).setPasscode(passcode);
+    if (mounted) _notify('Passcode changed');
+  }
+
+  Future<void> _turnOffLock() async {
+    if (!await confirmPasscode(context,
+        title: 'Turn off App Lock', action: 'Turn off')) {
+      return;
+    }
+    await ref.read(appLockProvider.notifier).disable();
+    if (mounted) _notify('App Lock is off');
+  }
+
+  Future<void> _setDeviceUnlock(bool on) async {
+    final lock = ref.read(appLockProvider.notifier);
+    if (on) {
+      // Make sure it actually works on this computer before relying on it.
+      final ok =
+          await lock.confirmWithDevice('Use $_deviceName to unlock Pastee');
+      if (!ok) {
+        if (mounted) _notify('$_deviceName didn’t confirm it was you');
+        return;
+      }
+    }
+    await lock.setDeviceUnlock(on);
+  }
 
   @override
   void dispose() {
@@ -196,6 +264,9 @@ class _SettingsDialogState extends ConsumerState<SettingsDialog> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    const _SectionTitle('App Lock'),
+                    _buildAppLock(theme, cs),
+                    const SizedBox(height: 20),
                     const _SectionTitle('Summon shortcut'),
                     _HotKeyStatusLine(status: status),
                     const SizedBox(height: 4),
@@ -382,6 +453,95 @@ class _SettingsDialogState extends ConsumerState<SettingsDialog> {
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildAppLock(ThemeData theme, ColorScheme cs) {
+    final lock = ref.watch(appLockProvider);
+    if (!lock.enabled) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Ask for a passcode${_deviceAvailable ? ' or $_deviceName' : ''} before Pastee shows your items.',
+            style:
+                theme.textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+          ),
+          const SizedBox(height: 8),
+          FilledButton.icon(
+            onPressed: _setUpLock,
+            icon: const Icon(Icons.lock_outline, size: 18),
+            label: const Text('Set a passcode…'),
+          ),
+        ],
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(Icons.lock, size: 16, color: Colors.green.shade600),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'On. Pastee asks for your passcode when it starts'
+                '${lock.timeout == LockTimeout.onlyAtLaunch ? '.' : ' and when it locks again.'}',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: Colors.green.shade700),
+              ),
+            ),
+          ],
+        ),
+        if (_deviceAvailable)
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+            title: Text('Unlock with $_deviceName'),
+            subtitle: const Text('The passcode always works too.'),
+            value: lock.deviceUnlock,
+            onChanged: _setDeviceUnlock,
+          ),
+        Row(
+          children: [
+            Expanded(
+                child: Text('Lock again', style: theme.textTheme.bodyMedium)),
+            DropdownButton<LockTimeout>(
+              value: lock.timeout,
+              onChanged: (t) {
+                if (t != null) ref.read(appLockProvider.notifier).setTimeout(t);
+              },
+              items: [
+                for (final t in LockTimeout.values)
+                  DropdownMenuItem(value: t, child: Text(t.label)),
+              ],
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            OutlinedButton(
+                onPressed: _changePasscode,
+                child: const Text('Change passcode…')),
+            OutlinedButton.icon(
+              onPressed: () {
+                Navigator.pop(context);
+                ref.read(appLockProvider.notifier).lock();
+              },
+              icon: const Icon(Icons.lock_outline, size: 18),
+              label: Text('Lock now (${primaryShortcut('L')})'),
+            ),
+            TextButton(
+              onPressed: _turnOffLock,
+              style: TextButton.styleFrom(foregroundColor: cs.error),
+              child: const Text('Turn off…'),
+            ),
+          ],
+        ),
+      ],
     );
   }
 

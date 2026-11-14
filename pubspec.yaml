@@ -20,6 +20,9 @@ dependencies:
   # which builds and bundles a stray jni.dll into the Windows app, so stay below it.
   path_provider_android: '>=2.2.18 <2.3.0'
   uuid: ^4.3.3
+  local_auth: ^3.0.2
+  crypto: ^3.0.6
+  clock: ^1.1.1
 
 dev_dependencies:
   flutter_test:

@@ -22,7 +22,8 @@ env:
 jobs:
   test:
     name: Analyze and test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -36,8 +37,13 @@ jobs:
         id: version
         run: |
           version=$(sed -n 's/^version: *\([0-9][0-9.]*\).*/\1/p' pubspec.yaml)
+          [[ -n "$version" ]] || { echo "::error::no version in pubspec.yaml"; exit 1; }
           if [[ "$GITHUB_REF" == refs/tags/v* && "${GITHUB_REF#refs/tags/v}" != "$version" ]]; then
             echo "::error::Tag ${GITHUB_REF#refs/tags/} does not match version $version in pubspec.yaml"
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/v* ]] && ! grep -qE "^## ${version//./\\.}( |$)" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## $version' section"
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -48,7 +54,8 @@ jobs:
   macos:
     name: macOS app
     needs: test
-    runs-on: macos-latest
+    runs-on: macos-26
+    timeout-minutes: 45
     env:
       VERSION: ${{ needs.test.outputs.version }}
     steps:
@@ -69,8 +76,9 @@ jobs:
           APP=build/macos/Build/Products/Release/Pastee.app
           test -d "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
-          echo "Architectures: $(lipo -archs "$APP/Contents/MacOS/Pastee")"
-          /usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Contents/Info.plist"
+          archs=$(lipo -archs "$APP/Contents/MacOS/Pastee"); echo "Architectures: $archs"
+          [[ "$archs" == *arm64* && "$archs" == *x86_64* ]]
+          test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$VERSION"
           codesign -d --entitlements - "$APP" || true
       - name: Package
         run: |
@@ -79,13 +87,13 @@ jobs:
           cp -R "$APP" dist/dmg/
           ln -s /Applications dist/dmg/Applications
           # hdiutil is occasionally "busy" on CI machines.
-          for attempt in 1 2 3; do
-            hdiutil create -volname "Pastee" -srcfolder dist/dmg -ov -format UDZO \
-              "dist/Pastee-$VERSION-macos.dmg" && break
-            echo "hdiutil failed (attempt $attempt), retrying"
-            sleep 10
+          ok=
+          for attempt in 1 2 3 4 5; do
+            if hdiutil create -volname "Pastee" -srcfolder dist/dmg -ov -format UDZO "dist/Pastee-$VERSION-macos.dmg"; then ok=1; break; fi
+            echo "hdiutil failed (attempt $attempt), retrying"; rm -f "dist/Pastee-$VERSION-macos.dmg"; sleep $((attempt * 10))
           done
-          test -f "dist/Pastee-$VERSION-macos.dmg"
+          test -n "$ok"
+          hdiutil verify "dist/Pastee-$VERSION-macos.dmg"
           ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/Pastee-$VERSION-macos.zip"
           rm -rf dist/dmg
           ls -la dist
@@ -94,11 +102,13 @@ jobs:
           name: pastee-macos
           path: dist/*
           if-no-files-found: error
+          compression-level: 0
 
   windows:
     name: Windows app
     needs: test
-    runs-on: windows-latest
+    runs-on: windows-2022
+    timeout-minutes: 45
     env:
       VERSION: ${{ needs.test.outputs.version }}
     steps:
@@ -122,8 +132,9 @@ jobs:
           if (-not (Test-Path "$release\pastee.exe")) { throw "pastee.exe was not built" }
           New-Item -ItemType Directory -Force dist | Out-Null
           Compress-Archive -Path "$release\*" -DestinationPath "dist\Pastee-$env:VERSION-windows-x64.zip"
-          choco upgrade innosetup -y --no-progress
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" windows\installer\pastee.iss
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup --version=6.7.1 --allow-downgrade -y --no-progress }
+          & $iscc "/DAppVersion=$env:VERSION" windows\installer\pastee.iss
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
           Get-ChildItem dist
       - uses: actions/upload-artifact@v7
@@ -131,12 +142,14 @@ jobs:
           name: pastee-windows
           path: dist/*
           if-no-files-found: error
+          compression-level: 0
 
   release:
     name: Publish the release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [test, macos, windows]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: write
     env:
@@ -157,7 +170,7 @@ jobs:
             found { print }
           ' CHANGELOG.md > notes.md
           cat .github/release-install.md >> notes.md
-          (cd dist && sha256sum * > SHA256SUMS.txt)
+          (cd dist && sha256sum -- * > SHA256SUMS.txt)
           cat notes.md
           ls -la dist
       - name: Create the GitHub release

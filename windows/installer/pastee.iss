@@ -16,6 +16,7 @@ AppId={{4A7218F1-5DCB-4D3B-B5EB-ADEE6B99FBA8}
 AppName=Pastee
 AppVersion={#AppVersion}
 AppVerName=Pastee {#AppVersion}
+VersionInfoVersion={#AppVersion}
 AppPublisher=Pastee
 AppPublisherURL=https://github.com/jackeratarina/pastee
 AppSupportURL=https://github.com/jackeratarina/pastee/issues

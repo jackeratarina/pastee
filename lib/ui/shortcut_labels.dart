@@ -16,6 +16,7 @@ List<(String, String)> inAppShortcuts() => [
       (primaryShortcut('E'), 'Rename the top item'),
       (primaryShortcut('R'), 'Show or hide the top item’s hidden text'),
       (primaryShortcut('F'), 'Search (Enter copies the top result)'),
+      (primaryShortcut('L'), 'Lock Pastee (when App Lock is on)'),
       (primaryShortcut(','), 'Settings'),
       ('Esc', 'Clear search, cancel renaming, or hide a summoned Pastee'),
     ];
