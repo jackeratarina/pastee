@@ -77,16 +77,17 @@ Settings suggests shortcuts that don't clash with the system or common apps:
 | ⌃⌥Space | Rarely taken | Ctrl+Alt+V | Office Paste Special; types a character on some layouts |
 
 You can also record your own. It needs two modifier keys, and Pastee tells you if another app already owns it.
-On macOS, closing the window keeps Pastee running so the shortcut keeps working; quit with `⌘Q`.
+On macOS, closing the window (or `⌘W`) keeps Pastee running so the shortcut keeps working; quit with `⌘Q`.
 To have Pastee ready after you log in, add it under **System Settings → General → Login Items** (macOS) or tick **Start Pastee when I sign in** in the installer (Windows).
 
 ## Privacy
 
 - Items are stored with AES-256 encryption (Hive) in the app's data folder:
-  - macOS: `~/Library/Containers/com.pastee.pastee/Data/Library/Application Support/com.pastee.pastee/data`
+  - macOS: `~/Library/Application Support/com.pastee.pastee/data`
   - Windows: `%APPDATA%\com.pastee\Pastee\data`
-- On Windows, the encryption key is protected with DPAPI, so only your Windows account on this PC can unlock it. On macOS, it sits inside the app's sandbox container, which other apps can't read without asking.
-- Pastee 1.0 kept an unencrypted file in your Documents folder. 1.1 moves those items into encrypted storage on first launch and deletes the old file.
+- On Windows, the encryption key is protected with DPAPI, so only your Windows account on this PC can unlock it.
+- On macOS, the key sits next to the data in your private Library folder. A copy of the data file on its own can't be read, but software running as you could read both. (Unsigned Mac apps can't use the keychain or the App Sandbox without macOS asking for permission after every update, so Pastee uses neither until it has a signed build.)
+- Pastee 1.0 kept an unencrypted file in Documents (on macOS, inside its sandbox container). 1.1 moves those items into encrypted storage on first launch and deletes the old file. On macOS, the system may ask once whether Pastee can access data from other apps: that's the old container.
 - Masking hides secrets on screen (screen sharing, someone looking over your shoulder). Anything you copy is a normal clipboard entry.
 
 ## Build from source

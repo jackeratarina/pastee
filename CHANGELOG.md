@@ -15,7 +15,8 @@
 ### Better field detection
 - Labeled values anywhere on a line: `user: alice pass: s3cret`, `Password: …`, `PIN 4821`, `Order #12345`, `Invoice: INV-2024-0042`, and Vietnamese labels (`tk`, `mk`, `mật khẩu`, `SĐT`, `mã đơn`, …).
 - `Key: value` lines keep their key as the label (Host, Port, Database…). A label on its own line followed by the value also works.
-- Recognizes GitHub, GitLab, AWS, Slack, Stripe, Google, OpenAI and Anthropic keys, JWTs, bearer tokens and PEM private keys.
+- Recognizes GitHub, GitLab, AWS, Slack, Stripe, Google, OpenAI and Anthropic keys, JWTs, bearer tokens, and PEM and PGP private keys.
+- Passwords in JSON (`"password": "…"`), connection strings (`Password=…;`), `.env` and YAML files, longer keys (`Password for my email: …`), `pass - …`, and whole passphrases.
 - Card numbers (Luhn-checked), one-time codes (`482913 is your Instagram code`), IPv4 addresses with ports, UUIDs, `www.` links, and the password inside connection URLs like `postgres://app:secret@db/prod`.
 - Fewer false positives: URLs and emails no longer keep trailing punctuation, IP addresses, timestamps and order numbers are no longer "phone numbers", and words like "bypass" or "compass" no longer look like passwords.
 - Fields are numbered in reading order, with plain lines after them.
@@ -33,6 +34,8 @@
 - Existing items are moved over automatically on first launch, and the old unencrypted file is deleted.
 - Auto-generated titles never contain a detected password.
 - On Windows, starting Pastee a second time brings the running window forward instead of opening another copy.
+- On macOS, Pastee no longer runs in the App Sandbox: an unsigned sandboxed app gets a permission prompt after every update. Data now lives in `~/Library/Application Support/com.pastee.pastee`.
+- Pasting a password you copied from Pastee saves it as an always-hidden item.
 
 ## 1.0.0 — 2026-02-27
 

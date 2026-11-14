@@ -4,6 +4,8 @@
 /// Pure Dart, no Flutter imports, so it can be unit-tested in isolation.
 library;
 
+import 'dart:math' as math;
+
 enum FieldKind {
   password,
   token,
@@ -195,6 +197,7 @@ class FieldExtractor {
     _uuids(text, candidates);
     _phones(text, candidates);
     _genericKeyValues(text, candidates);
+    _quotedPairs(text, candidates);
     _guessedPasswords(text, candidates);
 
     candidates.sort((a, b) {
@@ -206,9 +209,22 @@ class FieldExtractor {
 
     final accepted = <_Candidate>[];
     final values = <String>{};
+    // Secret candidates that did not become fields still have to be masked:
+    // a second "PIN: 4821", the same card twice, or a longer secret that
+    // overlaps a shorter accepted one.
+    final hiddenSecrets = <_Candidate>[];
     for (final candidate in candidates) {
-      if (accepted.any(candidate.conflictsWith)) continue;
-      if (!values.add(candidate.value)) continue;
+      final blockers = accepted.where(candidate.conflictsWith).toList();
+      if (blockers.isNotEmpty) {
+        if (candidate.secret && blockers.any((b) => b.secret)) {
+          hiddenSecrets.add(candidate);
+        }
+        continue;
+      }
+      if (!values.add(candidate.value)) {
+        if (candidate.secret) hiddenSecrets.add(candidate);
+        continue;
+      }
       accepted.add(candidate);
     }
 
@@ -217,9 +233,9 @@ class FieldExtractor {
     // or every "2024" in the note would turn into dots.
     final secretSpans = <Span>[];
     final secretValues = <String>{};
-    for (final c in accepted.where((c) => c.secret)) {
+    for (final c in [...accepted.where((c) => c.secret), ...hiddenSecrets]) {
       secretSpans.add(c.span);
-      secretValues.add(c.value);
+      if (!secretValues.add(c.value)) continue; // other occurrences done
       final numeric = RegExp(r'^\d+$').hasMatch(c.value);
       if (c.value.length >= (numeric ? 6 : 4) && c.kind != FieldKind.card) {
         var from = 0;
@@ -230,6 +246,11 @@ class FieldExtractor {
           from = at + c.value.length;
         }
       }
+    }
+
+    // A non-secret field whose value is also a secret is masked too.
+    for (final c in accepted) {
+      if (!c.secret && secretValues.contains(c.value)) secretSpans.add(c.span);
     }
 
     final chosen = accepted.take(maxFields).toList()
@@ -249,7 +270,7 @@ class FieldExtractor {
   // ── private keys & well-known token formats ───────────────────────────────
 
   static final _pemKey = RegExp(
-      r'-----BEGIN ((?:[A-Z0-9]+ )*PRIVATE KEY)-----[\s\S]*?-----END \1-----');
+      r'-----BEGIN ((?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?)-----[\s\S]*?(?:-----END \1-----|$)');
 
   static void _privateKeys(String text, List<_Candidate> out) {
     for (final m in _pemKey.allMatches(text)) {
@@ -282,7 +303,7 @@ class FieldExtractor {
     (RegExp(r'\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}'), 'SendGrid key'),
     (
       RegExp(
-          r'\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}'),
+          r'(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}'),
       'JWT'
     ),
   ];
@@ -452,6 +473,13 @@ class FieldExtractor {
   static final _strongSep = RegExp(r'^[ \t]*[:=：][ \t]*');
   static final _proseSep =
       RegExp(r'^[ \t]+(?:is|là|la)[ \t]+', caseSensitive: false, unicode: true);
+  static final _proseFillerSep = RegExp(
+      r'^(?:[ \t]+[\p{L}\p{N}-]+){1,3}?[ \t]+(?:is|là|la)[ \t]+',
+      caseSensitive: false,
+      unicode: true);
+  static final _dashSep = RegExp(r'^[ \t]+[-–—][ \t]+');
+  static final _bareSep =
+      RegExp(r'''^[ \t]+(?=[^\s"'“”‘’`()\[\]{}<>:=：]+[ \t]*$)''');
   static final _hashSep =
       RegExp(r'^[ \t]*(?:#|no\.|nr\.|number)[ \t]*', caseSensitive: false);
   static final _spaceSep = RegExp(r'^[ \t]+(?=[0-9+(#])');
@@ -469,14 +497,24 @@ class FieldExtractor {
       final entry = _lookupLabel(m.group(0)!);
       if (entry == null) continue;
       final (cat, label) = entry;
-      final lineEnd = _lineEnd(text, m.end);
+      final lineEnd = math.min(_lineEnd(text, m.end), m.end + 512);
       final after = text.substring(m.end, lineEnd);
 
       Match? sep = _strongSep.firstMatch(after);
       var prose = false;
+      var strict = false; // weak separator: the value must look like a password
       if (sep == null) {
         sep = _proseSep.firstMatch(after);
         prose = sep != null;
+      }
+      if (sep == null) {
+        sep = _proseFillerSep.firstMatch(after);
+        prose = strict = sep != null;
+      }
+      if (sep == null && cat == _Cat.password) {
+        // "pass - abc123", "pw abc123", "mk abc123"
+        sep = _dashSep.firstMatch(after) ?? _bareSep.firstMatch(after);
+        strict = sep != null;
       }
       if (sep == null && cat == _Cat.code) sep = _hashSep.firstMatch(after);
       if (sep == null &&
@@ -490,8 +528,20 @@ class FieldExtractor {
       if (sep == null) continue;
 
       final valueStart = m.end + sep.end;
+      if (label == 'Passphrase') {
+        final phrase = _wholeValue(text, valueStart, lineEnd);
+        if (phrase != null) {
+          out.add(_candidateFor(cat, label, phrase.$1, phrase.$2));
+        }
+        continue;
+      }
       final parsed = _parseValue(text, valueStart, lineEnd, cat, prose: prose);
       if (parsed == null) continue;
+      if (strict &&
+          (cat == _Cat.password || cat == _Cat.token) &&
+          !_looksLikePassword(parsed.$1)) {
+        continue;
+      }
       out.add(_candidateFor(cat, label, parsed.$1, parsed.$2));
     }
     // SMS style, code first: "482913 is your Instagram code".
@@ -564,6 +614,8 @@ class FieldExtractor {
     );
   }
 
+  static final _cellBreak = RegExp(r'\t| \| | \|\| ');
+  static final _valueEndingSemicolon = RegExp(r';(?=\s*[A-Za-z][\w ]*=|$)');
   static final _quoted = RegExp('^(["\'`“‘])(.+?)(["\'`”’])');
   static final _firstToken = RegExp(r'^\S+');
   static final _pinValue = RegExp(r'^\d{4,8}(?!\d)');
@@ -581,8 +633,9 @@ class FieldExtractor {
   static final _bracketed = RegExp(r'^[<\[{(].*[>\]})]$');
   static final _looksLikeKeyValue =
       RegExp(r'^\s*[\p{L}][\p{L}\p{N} ._-]{0,30}[:：=]\s', unicode: true);
-  static final _nextKey =
-      RegExp(r'[ \t]+[\p{L}][\p{L}\p{N} _-]{0,24}[:=：]', unicode: true);
+  static final _nextKey = RegExp(
+      r'(?<![ \t])[ \t]+[\p{L}][\p{L}\p{N} _-]{0,24}[:=：]',
+      unicode: true);
 
   /// Parses the value that starts at [start] on a line ending at [lineEnd].
   /// Returns the value and its span, or null if it doesn't fit the category.
@@ -601,7 +654,7 @@ class FieldExtractor {
       region = region.substring(0, next.start);
       wasCut = true;
     }
-    final cutAt = region.indexOf(RegExp(r'\t| \| | \|\| '));
+    final cutAt = region.indexOf(_cellBreak);
     if (cutAt > 0) {
       region = region.substring(0, cutAt);
       wasCut = true;
@@ -616,7 +669,7 @@ class FieldExtractor {
         : (value, Span(base + offset, base + offset + value.length));
 
     String stripTrailing(String value, {required bool moreFollows}) {
-      if (prose) return value.replaceFirst(RegExp(r'[.,;!?]+$'), '');
+      if (prose) return value.replaceFirst(RegExp(r'[.,;]$'), '');
       if (moreFollows) return value.replaceFirst(RegExp(r'[,;]$'), '');
       return value;
     }
@@ -633,6 +686,14 @@ class FieldExtractor {
           final token = _firstToken.firstMatch(region)!.group(0)!;
           value = stripTrailing(token,
               moreFollows: wasCut || token.length < region.length);
+          // Connection strings: "Password=abc;Database=prod" or "pwd=abc;".
+          final semicolon = _valueEndingSemicolon.firstMatch(value);
+          if (semicolon != null) value = value.substring(0, semicolon.start);
+          // "(pass: abc123)": the closing bracket belongs to the sentence.
+          if (value.endsWith(')') &&
+              '('.allMatches(value).length < ')'.allMatches(value).length) {
+            value = value.substring(0, value.length - 1);
+          }
           offset = 0;
         }
         if (value.isEmpty || value.length > 200) return null;
@@ -640,7 +701,11 @@ class FieldExtractor {
           return null;
         }
         if (prose && !_looksLikeCredential(value)) return null;
-        if (cat == _Cat.token && value.length < 8) return null;
+        if (cat == _Cat.token &&
+            value.length < 8 &&
+            !_looksLikePassword(value)) {
+          return null;
+        }
         if (cat == _Cat.username &&
             (_schemeStart.hasMatch(value) || value.length > 100)) {
           return null;
@@ -672,6 +737,14 @@ class FieldExtractor {
     }
   }
 
+  /// Mixes letters and digits, or has a symbol: "abc123" or "hunter2!", not
+  /// "2", "2024", "yes" or "see".
+  static bool _looksLikePassword(String v) =>
+      v.length >= 4 &&
+      ((v.contains(RegExp(r'\p{L}', unicode: true)) &&
+              v.contains(RegExp(r'\d'))) ||
+          v.contains(RegExp(r'[^\p{L}\p{N}]', unicode: true)));
+
   /// For "the password is …" phrasing, require something that doesn't read
   /// like an ordinary word ("is incorrect", "is locked").
   static bool _looksLikeCredential(String value) {
@@ -683,12 +756,12 @@ class FieldExtractor {
   // ── generic "Key: value" lines ─────────────────────────────────────────────
 
   static final _keyValueLine = RegExp(
-    r'^[ \t]*(?:[-*•·>]+[ \t]*)?([\p{L}][\p{L}\p{N} ._/()&\x27-]{0,30}?)[ \t]*[:：=][ \t]*(\S[^\n]*?)[ \t]*$',
+    r'^[ \t]*(?:[-*•·>]+[ \t]*)?([\p{L}][\p{L}\p{N} ._/()\[\]#&\x27-]{0,30}?)[ \t]*[:：=][ \t]*(\S[^\n]*)$',
     multiLine: true,
     unicode: true,
   );
   static final _secretWords = RegExp(
-    r'(?<![\p{L}])(?:password|passwd|pwd|pass|passcode|secret|token|api[ _-]?key|private[ _-]?key|pin|otp|mật khẩu|mat khau)(?![\p{L}])',
+    r'(?<![\p{L}])(?:password|passwd|pwd|pass|passcode|secret|token|api[ _-]?key|private[ _-]?key|pin|otp|mật khẩu|mat khau|mk|pw|passphrase|cvv|cvc|mã pin|ma pin|mã bảo mật|ma bao mat|seed phrase|recovery phrase|mnemonic|(?:wifi|wi-fi|network|security|wpa2?) key)(?![\p{L}])',
     caseSensitive: false,
     unicode: true,
   );
@@ -698,12 +771,36 @@ class FieldExtractor {
     unicode: true,
   );
 
+  static final _phraseWords = RegExp(
+    r'(?<![\p{L}])(?:passphrase|seed phrase|recovery phrase|secret phrase|mnemonic)(?![\p{L}])',
+    caseSensitive: false,
+    unicode: true,
+  );
+
+  /// A multi-word secret: the rest of the value, without quotes.
+  static (String, Span)? _wholeValue(String text, int start, int end) {
+    final raw = text.substring(start, end);
+    final quoted = _quoted.firstMatch(raw.trimLeft());
+    final lead = raw.length - raw.trimLeft().length;
+    if (quoted != null) {
+      final v = quoted.group(2)!;
+      return (v, Span(start + lead + 1, start + lead + 1 + v.length));
+    }
+    final v = raw.trim();
+    if (v.isEmpty || v.length > 300 || _placeholder.hasMatch(v)) return null;
+    return (v, Span(start + lead, start + lead + v.length));
+  }
+
   static void _genericKeyValues(String text, List<_Candidate> out) {
     for (final m in _keyValueLine.allMatches(text)) {
       final key = m.group(1)!.trim();
-      var value = m.group(2)!;
-      if (key.length < 2 || key.split(RegExp(r'\s+')).length > 4) continue;
-      if (RegExp(r'\d$').hasMatch(key)) continue; // "at 10:30"
+      var value = m.group(2)!.trimRight();
+      final secretKey = _secretWords.hasMatch(key);
+      if (key.length < 2 ||
+          key.split(RegExp(r'\s+')).length > (secretKey ? 8 : 4)) {
+        continue;
+      }
+      if (!secretKey && RegExp(r'\d$').hasMatch(key)) continue; // "at 10:30"
       if (value.startsWith('//')) continue; // "https://…" split at its colon
       if (_lookupLabel(key) != null) continue; // handled by _labeled
       final cut = value.indexOf(RegExp(r'\t| \| '));
@@ -712,7 +809,18 @@ class FieldExtractor {
       final valueStart = m.start + m.group(0)!.lastIndexOf(m.group(2)!);
       final label = _capitalize(key);
 
-      if (_secretWords.hasMatch(key)) {
+      if (_phraseWords.hasMatch(key)) {
+        final phrase = _wholeValue(text, valueStart, valueStart + value.length);
+        if (phrase == null) continue;
+        out.add(_Candidate(
+          kind: FieldKind.password,
+          label: label,
+          value: phrase.$1,
+          span: phrase.$2,
+          priority: _pLabeledSecret,
+          secret: true,
+        ));
+      } else if (_secretWords.hasMatch(key)) {
         final parsed = _parseValue(
             text, valueStart, valueStart + value.length, _Cat.password,
             prose: false);
@@ -746,6 +854,32 @@ class FieldExtractor {
           priority: _pGeneric,
         ));
       }
+    }
+  }
+
+  static final _quotedPair = RegExp(
+      r'''(["'])([^"'\n]{1,40})\1[ \t]*[:=][ \t]*(?:"((?:[^"\\\n]|\\.){1,200})"|'((?:[^'\\\n]|\\.){1,200})')''');
+
+  static void _quotedPairs(String text, List<_Candidate> out) {
+    for (final m in _quotedPair.allMatches(text)) {
+      final key = m.group(2)!;
+      final value = m.group(3) ?? m.group(4)!;
+      final entry = _lookupLabel(key);
+      final secret = _secretWords.hasMatch(key) ||
+          (entry != null &&
+              entry.$1 != _Cat.username &&
+              entry.$1 != _Cat.phone &&
+              entry.$1 != _Cat.code);
+      if (!secret || value.isEmpty || _placeholder.hasMatch(value)) continue;
+      final start = m.end - 1 - value.length;
+      out.add(_Candidate(
+        kind: FieldKind.password,
+        label: entry?.$2 ?? _capitalize(key),
+        value: value,
+        span: Span(start, start + value.length),
+        priority: _pLabeledSecret,
+        secret: true,
+      ));
     }
   }
 
@@ -807,7 +941,7 @@ class FieldExtractor {
   static final _www =
       RegExp(r'^www\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}');
   static final _urlCredentials =
-      RegExp(r'^[a-zA-Z][a-zA-Z0-9+.-]*://([^/?#@\s:]+):([^/?#@\s]+)@');
+      RegExp(r'^[a-zA-Z][a-zA-Z0-9+.-]*://([^/?#@\s:]*):([^\s/]+)@');
 
   static void _urls(
       String text, List<_Candidate> out, int Function() nextGroup) {
@@ -848,6 +982,11 @@ class FieldExtractor {
   /// Drops sentence punctuation and unbalanced closing brackets from the end
   /// of a URL: "(see https://x.com/a)." → "https://x.com/a".
   static int _trimUrlEnd(String s) {
+    var open = 0, close = 0;
+    for (final unit in s.codeUnits) {
+      if (unit == 0x28) open++;
+      if (unit == 0x29) close++;
+    }
     var end = s.length;
     while (end > 0) {
       final c = s[end - 1];
@@ -855,12 +994,10 @@ class FieldExtractor {
         end--;
         continue;
       }
-      if (c == ')') {
-        final head = s.substring(0, end);
-        if ('('.allMatches(head).length < ')'.allMatches(head).length) {
-          end--;
-          continue;
-        }
+      if (c == ')' && open < close) {
+        close--;
+        end--;
+        continue;
       }
       break;
     }

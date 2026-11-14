@@ -50,7 +50,8 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs 
 [Icons]
 Name: "{autoprograms}\Pastee"; Filename: "{app}\pastee.exe"
 Name: "{autodesktop}\Pastee"; Filename: "{app}\pastee.exe"; Tasks: desktopicon
-Name: "{userstartup}\Pastee"; Filename: "{app}\pastee.exe"; Tasks: startup
+; Starts minimized: Pastee waits on the taskbar for the summon shortcut.
+Name: "{autostartup}\Pastee"; Filename: "{app}\pastee.exe"; Tasks: startup; Flags: runminimized
 
 [Run]
 Filename: "{app}\pastee.exe"; Description: "{cm:LaunchProgram,Pastee}"; Flags: nowait postinstall skipifsilent

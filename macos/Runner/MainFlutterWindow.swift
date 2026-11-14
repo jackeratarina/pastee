@@ -76,15 +76,16 @@ class MainFlutterWindow: NSWindow {
     switch call.method {
     case "registerHotKey":
       guard let args = call.arguments as? [String: Any],
-        let keyCode = args["keyCode"] as? Int,
-        let modifiers = args["modifiers"] as? Int
+        let rawKeyCode = args["keyCode"] as? Int, let keyCode = UInt32(exactly: rawKeyCode),
+        let rawModifiers = args["modifiers"] as? Int,
+        let modifiers = UInt32(exactly: rawModifiers)
       else {
         result(
           FlutterError(
             code: "bad_args", message: "keyCode and modifiers are required", details: nil))
         return
       }
-      let status = summonHotKey.register(keyCode: UInt32(keyCode), modifiers: UInt32(modifiers))
+      let status = summonHotKey.register(keyCode: keyCode, modifiers: modifiers)
       result(Int(status))
     case "unregisterHotKey":
       summonHotKey.unregister()
@@ -111,8 +112,8 @@ final class GlobalHotKey {
   private var handlerRef: EventHandlerRef?
   private static let signature: OSType = 0x5053_5445  // 'PSTE'
 
-  /// Returns noErr, or the Carbon error (eventHotKeyExistsErr when the
-  /// combination is already taken).
+  /// Returns noErr, or the Carbon error (eventHotKeyExistsErr when another
+  /// app holds the combination exclusively).
   func register(keyCode: UInt32, modifiers: UInt32) -> OSStatus {
     unregister()
     if handlerRef == nil {
@@ -132,8 +133,13 @@ final class GlobalHotKey {
       }
     }
     let hotKeyID = EventHotKeyID(signature: GlobalHotKey.signature, id: 1)
+    // Carbon hotkeys are shared between apps unless registered exclusively.
+    // Exclusive registration takes the combination over from apps that hold it
+    // non-exclusively, and fails (so Pastee can say so) if one holds it
+    // exclusively.
     return RegisterEventHotKey(
-      keyCode, modifiers, hotKeyID, GetApplicationEventTarget(), OptionBits(0), &hotKeyRef)
+      keyCode, modifiers, hotKeyID, GetApplicationEventTarget(),
+      OptionBits(kEventHotKeyExclusive), &hotKeyRef)
   }
 
   func unregister() {

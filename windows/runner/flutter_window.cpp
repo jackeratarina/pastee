@@ -152,25 +152,10 @@ void FlutterWindow::ShowAndFocus() {
     return;
   }
   ::ShowWindow(hwnd, ::IsIconic(hwnd) ? SW_RESTORE : SW_SHOW);
-
-  // Windows only lets the foreground thread hand out focus. Briefly sharing
-  // its input state is the standard way for a hotkey-summoned window to come
-  // to the front reliably.
-  HWND foreground = ::GetForegroundWindow();
-  const DWORD foreground_thread =
-      foreground != nullptr ? ::GetWindowThreadProcessId(foreground, nullptr)
-                            : 0;
-  const DWORD this_thread = ::GetCurrentThreadId();
-  bool attached = false;
-  if (foreground_thread != 0 && foreground_thread != this_thread) {
-    attached =
-        ::AttachThreadInput(foreground_thread, this_thread, TRUE) != FALSE;
-  }
-  ::BringWindowToTop(hwnd);
+  // Pressing a registered hotkey gives this process permission to take the
+  // foreground, so no input-queue tricks are needed (and AttachThreadInput can
+  // hang or reset the modifier keys the user is still holding).
   ::SetForegroundWindow(hwnd);
-  if (attached) {
-    ::AttachThreadInput(foreground_thread, this_thread, FALSE);
-  }
 }
 
 // Minimizing (rather than hiding) keeps Pastee on the taskbar and hands focus
@@ -200,6 +185,11 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
     case WM_FONTCHANGE:
       flutter_controller_->engine()->ReloadSystemFonts();
       break;
+    case WM_DESTROY:
+      // Win32Window clears the window handle before OnDestroy runs, so the
+      // hotkey has to be released here while GetHandle() is still valid.
+      UnregisterSummonHotKey();
+      break;
     case WM_HOTKEY:
       if (static_cast<int>(wparam) == kSummonHotKeyId) {
         const bool show = !IsWindowActive();
@@ -219,11 +209,15 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       }
       break;
     case WM_GETMINMAXINFO: {
+      // kMinWidth x kMinHeight is the content size; add the frame around it.
       auto* info = reinterpret_cast<MINMAXINFO*>(lparam);
       HMONITOR monitor = ::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
       const UINT dpi = FlutterDesktopGetDpiForMonitor(monitor);
-      info->ptMinTrackSize.x = ::MulDiv(kMinWidth, static_cast<int>(dpi), 96);
-      info->ptMinTrackSize.y = ::MulDiv(kMinHeight, static_cast<int>(dpi), 96);
+      RECT frame = {0, 0, ::MulDiv(kMinWidth, static_cast<int>(dpi), 96),
+                    ::MulDiv(kMinHeight, static_cast<int>(dpi), 96)};
+      ::AdjustWindowRectExForDpi(&frame, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi);
+      info->ptMinTrackSize.x = frame.right - frame.left;
+      info->ptMinTrackSize.y = frame.bottom - frame.top;
       return 0;
     }
   }

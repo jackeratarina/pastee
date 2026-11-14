@@ -15,10 +15,12 @@ abstract class KeyProtector {
   Uint8List unprotect(Uint8List data);
 }
 
-/// Stores the key as-is. Used on macOS, where the file lives inside the app's
-/// sandbox container: other sandboxed apps can't read it, and macOS 14+ asks
-/// before any other app opens it. (The login keychain would prompt for your
-/// password after every update of an unsigned build, so it isn't used.)
+/// Stores the key as-is, in the user's private Library folder on macOS. This
+/// keeps the data file unreadable if it is copied somewhere on its own; the
+/// folder itself is only readable by your user account. (The login keychain
+/// would ask for your password after every update of an unsigned build, and
+/// the App Sandbox would ask for permission to open Pastee's own data, so
+/// neither is used.)
 class PlainKeyProtector implements KeyProtector {
   const PlainKeyProtector();
 
