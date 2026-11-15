@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../model/paste_item.dart';
+import '../providers/field_config_provider.dart';
 import '../providers/providers.dart';
 import '../services/clipboard_service.dart';
 import '../services/field_extractor.dart';
@@ -171,7 +172,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final items = ref.read(filteredPasteListProvider);
     if (items.isEmpty) return;
     final item = items.first;
-    if (!item.sensitive && !FieldExtractor.extract(item.content).hasSecrets) {
+    if (!item.sensitive && !extractFields(ref, item.content).hasSecrets) {
       _showSnackBar('Nothing is hidden in the top item');
       return;
     }
@@ -306,7 +307,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Future<void> _copyField(PasteItem item, int index) async {
-    final extraction = FieldExtractor.extract(item.content);
+    final extraction = extractFields(ref, item.content);
     if (index < 0 || index >= extraction.fields.length) {
       _showSnackBar('The top item has no field ${index + 1}');
       return;
@@ -335,7 +336,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     _flushSearch();
     final items = ref.read(filteredPasteListProvider);
     if (items.isEmpty) return;
-    await _copyField(items.first, index);
+    // ⌘N copies the field numbered N, which isn't always the Nth chip: a
+    // field can have its own number (Settings → Fields & numbers).
+    final fields = extractFields(ref, items.first.content).fields;
+    final position = fields.indexWhere((f) => f.number == index + 1);
+    if (position < 0) {
+      _showSnackBar('The top item has no field ${index + 1}');
+      return;
+    }
+    await _copyField(items.first, position);
   }
 
   Future<void> _cutFirstItem() async {
@@ -387,7 +396,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     _triggerFlash(item.id);
     _restoreFocus();
     final title =
-        displayTitle(item, FieldExtractor.extract(item.content), hidden: true);
+        displayTitle(item, extractFields(ref, item.content), hidden: true);
     _showSnackBar('Restored “${truncateGraphemes(title, 30)}”');
   }
 
@@ -620,6 +629,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Widget build(BuildContext context) {
     final items = ref.watch(filteredPasteListProvider);
     final settings = ref.watch(settingsProvider);
+    final fieldConfig = ref.watch(fieldConfigProvider);
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
@@ -645,7 +655,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         return PasteTile(
                           key: ValueKey(item.id),
                           item: item,
-                          extraction: FieldExtractor.extract(item.content),
+                          extraction: FieldExtractor.extract(item.content,
+                              config: fieldConfig),
                           isFirst: isFirst,
                           maskSecrets: settings.maskSecrets,
                           revealed: _revealed.containsKey(item.id),
