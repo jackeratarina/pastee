@@ -7,12 +7,14 @@
 #include <flutter/method_channel.h>
 
 #include <memory>
+#include <optional>
+#include <string>
 
 #include "win32_window.h"
 
 // A window that hosts a Flutter view plus Pastee's small native bridge
-// (channel "pastee/native"): a system-wide summon shortcut, and showing or
-// minimizing the window.
+// (channel "pastee/native"): a system-wide summon shortcut, showing or
+// minimizing the window, and copying secrets.
 class FlutterWindow : public Win32Window {
  public:
   // Creates a new FlutterWindow hosting a Flutter view running |project|.
@@ -36,6 +38,11 @@ class FlutterWindow : public Win32Window {
   void StartHideFallback();
   void CancelHideFallback();
   void UnregisterSummonHotKey();
+  // Returns the clipboard sequence number after writing, or nullopt if the
+  // clipboard couldn't be opened or written.
+  std::optional<DWORD> WriteClipboard(const std::string& text, bool concealed);
+  // Empties the clipboard if its sequence number is still |sequence|.
+  bool ClearClipboardIfUnchanged(DWORD sequence);
 
   // The project to run.
   flutter::DartProject project_;
@@ -49,6 +56,10 @@ class FlutterWindow : public Win32Window {
 
   // Set while a shortcut hide is waiting for Dart (the fallback timer runs).
   bool hide_pending_ = false;
+
+  // The sequence number of a copied secret to clear when Pastee quits, if the
+  // clipboard still holds it then.
+  std::optional<DWORD> clear_on_exit_sequence_;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

@@ -152,6 +152,83 @@ void main() {
     expect(find.textContaining('hunter2!'), findsNothing);
   }, variant: mac);
 
+  testWidgets('copied secrets are marked secret and say when they clear',
+      (tester) async {
+    final clipboard = FakeClipboard()
+      ..clearsSecretsAfter = const Duration(seconds: 30);
+    final app = TestApp(
+        clipboard: clipboard,
+        items: [makeItem('user: bob\npassword: hunter2!', id: 'login')]);
+    await app.pump(tester);
+
+    await pressShortcut(tester, LogicalKeyboardKey.digit1);
+    expect(clipboard.text, 'bob');
+    expect(clipboard.lastSecret, isFalse);
+    // The note has a hidden password, so the message leaves values out.
+    expect(find.text('Copied Username'), findsOneWidget);
+
+    await pressShortcut(tester, LogicalKeyboardKey.digit2);
+    expect(clipboard.text, 'hunter2!');
+    expect(clipboard.lastSecret, isTrue);
+    expect(find.text('Copied Password · clears in 30 s'), findsOneWidget);
+
+    // The whole note contains a password, so copying it is a secret too.
+    await pressShortcut(tester, LogicalKeyboardKey.keyC);
+    expect(clipboard.text, 'user: bob\npassword: hunter2!');
+    expect(clipboard.lastSecret, isTrue);
+    expect(find.text('Copied to clipboard · clears in 30 s'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 5));
+  }, variant: mac);
+
+  testWidgets('a note without secrets is copied normally', (tester) async {
+    final clipboard = FakeClipboard()
+      ..clearsSecretsAfter = const Duration(seconds: 30);
+    final app = TestApp(
+        clipboard: clipboard, items: [makeItem('buy milk and eggs', id: 'n')]);
+    await app.pump(tester);
+
+    await pressShortcut(tester, LogicalKeyboardKey.keyC);
+    expect(clipboard.text, 'buy milk and eggs');
+    expect(clipboard.lastSecret, isFalse);
+    expect(find.text('Copied to clipboard'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 5));
+  }, variant: windows);
+
+  testWidgets('everything copied from an "always hide" item is a secret',
+      (tester) async {
+    final clipboard = FakeClipboard();
+    final app = TestApp(clipboard: clipboard, items: [
+      makeItem('Host: db.internal\nPort: 5432', id: 's', sensitive: true)
+    ]);
+    await app.pump(tester);
+
+    await pressShortcut(tester, LogicalKeyboardKey.digit1);
+    expect(clipboard.text, 'db.internal');
+    expect(clipboard.lastSecret, isTrue);
+    await pressShortcut(tester, LogicalKeyboardKey.keyX);
+    expect(clipboard.lastSecret, isTrue);
+    await tester.pump(const Duration(seconds: 5));
+  }, variant: mac);
+
+  testWidgets('settings: "Clear copied secrets" is saved', (tester) async {
+    final app = TestApp();
+    await app.pump(tester);
+    await pressShortcut(tester, LogicalKeyboardKey.comma);
+    await tester.pumpAndSettle();
+
+    final dropdown = find.byKey(const ValueKey('clearSecretsAfter'));
+    await tester.ensureVisible(dropdown);
+    await tester.pumpAndSettle();
+    expect(find.text('After 30 seconds'), findsOneWidget);
+    await tester.tap(dropdown);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Never').last);
+    await tester.pumpAndSettle();
+
+    expect(app.container.read(settingsProvider).clearSecretsAfter, isNull);
+    expect(app.settingsStore.values['clearSecretsAfterSeconds'], 0);
+  }, variant: mac);
+
   testWidgets('the header eye turns masking off and on', (tester) async {
     final app = TestApp(items: [makeItem('pin: 4821', id: 'p')]);
     await app.pump(tester);

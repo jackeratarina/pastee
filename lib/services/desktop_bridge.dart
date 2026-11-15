@@ -37,6 +37,23 @@ abstract class DesktopBridge {
   /// Hides Pastee and returns focus to the app you were in (macOS hides the
   /// app; Windows minimizes the window).
   Future<void> hideWindow();
+
+  /// Puts [text] on the clipboard and returns the clipboard's change number
+  /// afterwards, or null if the native side couldn't (the caller then falls
+  /// back to Flutter's clipboard).
+  ///
+  /// [concealed] marks the text as a secret so clipboard history, clipboard
+  /// managers and other devices leave it out: org.nspasteboard.ConcealedType
+  /// and current-host-only (no Universal Clipboard) on macOS; the formats that
+  /// keep it out of clipboard history (Win+V) and cloud sync on Windows. With
+  /// [clearOnExit], quitting Pastee empties the clipboard if it still holds
+  /// this text.
+  Future<int?> writeClipboard(String text,
+      {required bool concealed, required bool clearOnExit});
+
+  /// Empties the clipboard if its change number is still [changeCount], that
+  /// is, if nothing else was copied since. Returns whether it was emptied.
+  Future<bool> clearClipboard(int changeCount);
 }
 
 class MethodChannelDesktopBridge implements DesktopBridge {
@@ -108,6 +125,37 @@ class MethodChannelDesktopBridge implements DesktopBridge {
 
   @override
   Future<void> hideWindow() => _invoke('hideWindow');
+
+  @override
+  Future<int?> writeClipboard(String text,
+      {required bool concealed, required bool clearOnExit}) async {
+    if (!isSupported) return null;
+    try {
+      return await _channel.invokeMethod<int>('writeClipboard', {
+        'text': text,
+        'concealed': concealed,
+        'clearOnExit': clearOnExit,
+      });
+    } on PlatformException {
+      return null; // e.g. another app is holding the clipboard open
+    } on MissingPluginException {
+      return null;
+    }
+  }
+
+  @override
+  Future<bool> clearClipboard(int changeCount) async {
+    if (!isSupported) return false;
+    try {
+      return await _channel.invokeMethod<bool>(
+              'clearClipboard', {'changeCount': changeCount}) ??
+          false;
+    } on PlatformException {
+      return false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
 
   Future<void> _invoke(String method) async {
     if (!isSupported) return;

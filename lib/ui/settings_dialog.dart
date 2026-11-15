@@ -1,7 +1,9 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../model/app_settings.dart';
 import '../model/hotkey.dart';
 import '../providers/providers.dart';
 import '../services/app_lock.dart';
@@ -133,6 +135,22 @@ class _SettingsDialogState extends ConsumerState<SettingsDialog> {
       return 'Only when Pastee starts (not when closed)';
     }
     return timeout.label;
+  }
+
+  static String _delayLabel(Duration delay) {
+    if (delay.inSeconds < 60) return '${delay.inSeconds} seconds';
+    return delay.inMinutes == 1 ? '1 minute' : '${delay.inMinutes} minutes';
+  }
+
+  static String _concealNote() {
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.macOS:
+        return 'Copied secrets also stay out of clipboard managers and don’t go to your other Apple devices.';
+      case TargetPlatform.windows:
+        return 'Copied secrets also stay out of clipboard history (Win+V) and cloud clipboard sync.';
+      default:
+        return '';
+    }
   }
 
   @override
@@ -381,6 +399,41 @@ class _SettingsDialogState extends ConsumerState<SettingsDialog> {
                       value: settings.maskSecrets,
                       onChanged: (v) =>
                           ref.read(settingsProvider.notifier).setMaskSecrets(v),
+                    ),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text('Clear copied secrets',
+                              style: theme.textTheme.bodyMedium),
+                        ),
+                        const SizedBox(width: 16),
+                        DropdownButton<int>(
+                          key: const ValueKey('clearSecretsAfter'),
+                          value: settings.clearSecretsAfter?.inSeconds ?? 0,
+                          onChanged: (seconds) {
+                            if (seconds == null) return;
+                            ref
+                                .read(settingsProvider.notifier)
+                                .setClearSecretsAfter(seconds == 0
+                                    ? null
+                                    : Duration(seconds: seconds));
+                          },
+                          items: [
+                            for (final d in AppSettings.clearSecretsChoices)
+                              DropdownMenuItem(
+                                value: d.inSeconds,
+                                child: Text('After ${_delayLabel(d)}'),
+                              ),
+                            const DropdownMenuItem(
+                                value: 0, child: Text('Never')),
+                          ],
+                        ),
+                      ],
+                    ),
+                    Text(
+                      'When you copy a password, code or key, Pastee empties the clipboard after this long, unless you copied something else since. ${_concealNote()}',
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(color: cs.onSurfaceVariant),
                     ),
                     const SizedBox(height: 8),
                     Row(

@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../model/paste_item.dart';
 import '../providers/providers.dart';
+import '../services/clipboard_service.dart';
 import '../services/field_extractor.dart';
 import '../services/paste_titles.dart';
 import '../services/text_utils.dart';
@@ -277,12 +278,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     _restoreFocus();
   }
 
+  /// Copies of these get the clipboard's secret treatment: kept out of
+  /// clipboard history and cleared again after a while.
+  bool _isSecretItem(PasteItem item) =>
+      item.sensitive || FieldExtractor.extract(item.content).hasSecrets;
+
+  String _withClearNote(String message, Duration? clearsIn) => clearsIn == null
+      ? message
+      : '$message · clears in ${describeClearDelay(clearsIn)}';
+
   Future<void> _copyItem(PasteItem item) async {
-    await ref.read(clipboardServiceProvider).setText(item.content);
+    final clearsIn = await ref
+        .read(clipboardServiceProvider)
+        .setText(item.content, secret: _isSecretItem(item));
     if (!mounted) return;
     _triggerFlash(item.id);
     _restoreFocus();
-    _showSnackBar('Copied to clipboard');
+    _showSnackBar(_withClearNote('Copied to clipboard', clearsIn));
     _hideAfterCopyIfSummoned();
   }
 
@@ -300,17 +312,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       return;
     }
     final field = extraction.fields[index];
-    await ref.read(clipboardServiceProvider).setText(field.value);
+    final clearsIn = await ref
+        .read(clipboardServiceProvider)
+        .setText(field.value, secret: field.secret || item.sensitive);
     if (!mounted) return;
     _triggerFlash(item.id, index);
     _restoreFocus();
     if (_isHidden(item, extraction)) {
-      _showSnackBar(
-          'Copied ${item.sensitive ? safeFieldLabel(field) : field.label}');
+      _showSnackBar(_withClearNote(
+          'Copied ${item.sensitive ? safeFieldLabel(field) : field.label}',
+          clearsIn));
     } else {
       final preview = truncateGraphemes(
           sanitizeUtf16(field.value.replaceAll('\n', ' ')), 30);
-      _showSnackBar('Copied ${field.label}: $preview');
+      _showSnackBar(
+          _withClearNote('Copied ${field.label}: $preview', clearsIn));
     }
     _hideAfterCopyIfSummoned();
   }
@@ -327,8 +343,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final items = ref.read(filteredPasteListProvider);
     if (items.isEmpty) return;
     final item = items.first;
-    await ref.read(clipboardServiceProvider).setText(item.content);
-    await _deleteItem(item, message: 'Cut to clipboard');
+    final clearsIn = await ref
+        .read(clipboardServiceProvider)
+        .setText(item.content, secret: _isSecretItem(item));
+    await _deleteItem(item,
+        message: _withClearNote('Cut to clipboard', clearsIn));
   }
 
   Future<void> _deleteFirstItem() async {

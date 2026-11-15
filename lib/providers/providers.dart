@@ -27,8 +27,14 @@ final settingsStoreProvider =
 final storageReportProvider =
     Provider<StorageReport>((ref) => const StorageReport());
 
-final clipboardServiceProvider =
-    Provider<ClipboardService>((ref) => const ClipboardService());
+final clipboardServiceProvider = Provider<ClipboardService>((ref) {
+  final service = ClipboardService(
+    bridge: ref.watch(desktopBridgeProvider),
+    clearSecretsAfter: () => ref.read(settingsProvider).clearSecretsAfter,
+  );
+  ref.onDispose(service.dispose);
+  return service;
+});
 
 final desktopBridgeProvider =
     Provider<DesktopBridge>((ref) => MethodChannelDesktopBridge());
@@ -67,10 +73,12 @@ class SettingsNotifier extends StateNotifier<AppSettings> {
   static const _kHotKey = 'summonHotKey';
   static const _kHideAfterCopy = 'hideAfterCopy';
   static const _kMaskSecrets = 'maskSecrets';
+  static const _kClearSecretsAfter = 'clearSecretsAfterSeconds';
 
   static AppSettings _load(SettingsStore store) {
     final theme = store.read(_kTheme);
     final hotKey = store.read(_kHotKey);
+    final clearSeconds = store.read(_kClearSecretsAfter);
     return AppSettings(
       themeMode: ThemeMode.values.firstWhere(
         (m) => m.name == theme,
@@ -84,6 +92,13 @@ class SettingsNotifier extends StateNotifier<AppSettings> {
               : HotKeySpec.fromJson(hotKey) ?? defaultHotKey(),
       hideAfterCopy: store.read(_kHideAfterCopy) as bool? ?? true,
       maskSecrets: store.read(_kMaskSecrets) as bool? ?? true,
+      // 0: never. Anything that isn't one of the offered choices (an edited
+      // or damaged file) falls back to the default.
+      clearSecretsAfter: clearSeconds == 0
+          ? null
+          : AppSettings.clearSecretsChoices.firstWhere(
+              (d) => d.inSeconds == clearSeconds,
+              orElse: () => AppSettings.defaultClearSecretsAfter),
     );
   }
 
@@ -105,6 +120,13 @@ class SettingsNotifier extends StateNotifier<AppSettings> {
   Future<void> setMaskSecrets(bool value) async {
     state = state.copyWith(maskSecrets: value);
     await _store.write(_kMaskSecrets, value);
+  }
+
+  /// null: keep copied secrets on the clipboard until something else is
+  /// copied.
+  Future<void> setClearSecretsAfter(Duration? delay) async {
+    state = state.copyWith(clearSecretsAfter: () => delay);
+    await _store.write(_kClearSecretsAfter, delay?.inSeconds ?? 0);
   }
 }
 

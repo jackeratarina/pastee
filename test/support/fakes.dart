@@ -20,11 +20,21 @@ class FakeClipboard extends ClipboardService {
 
   String? text;
 
+  /// Whether the last [setText] was a secret.
+  bool? lastSecret;
+
+  /// What [setText] reports back for secrets (the "clears in" delay).
+  Duration? clearsSecretsAfter;
+
   @override
   Future<String?> getText() async => text;
 
   @override
-  Future<void> setText(String value) async => text = value;
+  Future<Duration?> setText(String value, {bool secret = false}) async {
+    text = value;
+    lastSecret = secret;
+    return secret ? clearsSecretsAfter : null;
+  }
 }
 
 class FakeBridge implements DesktopBridge {
@@ -67,6 +77,38 @@ class FakeBridge implements DesktopBridge {
   Future<void> hideWindow() async {
     hideCalls++;
     onHide?.call();
+  }
+
+  /// A pretend system clipboard with a change number, like NSPasteboard's
+  /// changeCount or Windows' clipboard sequence number.
+  String? clipboardText;
+  int changeCount = 0;
+  bool lastWriteConcealed = false;
+  bool lastWriteClearsOnExit = false;
+  int clearCalls = 0;
+
+  /// Another app copied something.
+  void otherAppCopied(String text) {
+    clipboardText = text;
+    changeCount++;
+  }
+
+  @override
+  Future<int?> writeClipboard(String text,
+      {required bool concealed, required bool clearOnExit}) async {
+    clipboardText = text;
+    lastWriteConcealed = concealed;
+    lastWriteClearsOnExit = clearOnExit;
+    return ++changeCount;
+  }
+
+  @override
+  Future<bool> clearClipboard(int changeCount) async {
+    clearCalls++;
+    if (changeCount != this.changeCount) return false;
+    clipboardText = null;
+    this.changeCount++;
+    return true;
   }
 }
 
