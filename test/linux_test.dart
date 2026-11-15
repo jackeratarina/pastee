@@ -1,10 +1,16 @@
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:hive/hive.dart';
+import 'package:path/path.dart' as p;
 import 'package:pastee/model/hotkey.dart';
 import 'package:pastee/providers/providers.dart';
 import 'package:pastee/services/desktop_bridge.dart';
+import 'package:pastee/services/key_store.dart';
+import 'package:pastee/services/storage_service.dart';
 
 import 'support/fakes.dart';
 
@@ -198,4 +204,35 @@ void main() {
     expect(custom.nativeModifiers, 0x04 | 0x08);
     expect(app.bridge.registered.last, custom);
   }, variant: linux);
+
+  group('Linux storage', () {
+    late Directory root;
+
+    setUp(() async {
+      root = await Directory.systemTemp.createTemp('pastee_linux_test');
+    });
+
+    tearDown(() async {
+      await Hive.close();
+      await root.delete(recursive: true);
+    });
+
+    int mode(String path) => FileStat.statSync(path).mode & 0x1ff;
+
+    test('the data folder and key file are private to the user', () async {
+      final dataDir = Directory(p.join(root.path, 'support', 'data'));
+      final keyFile = File(p.join(dataDir.path, 'key.bin'));
+      await Storage.open(dataDir: dataDir, keyStore: FileKeyStore(keyFile));
+      expect(mode(dataDir.path), 0x1c0, reason: '0700'); // drwx------
+      expect(mode(keyFile.path), 0x180, reason: '0600'); // -rw-------
+      await Hive.close();
+
+      // Folders and keys left with looser modes are tightened on the next run.
+      await Process.run('chmod', ['755', dataDir.path]);
+      await Process.run('chmod', ['644', keyFile.path]);
+      await Storage.open(dataDir: dataDir, keyStore: FileKeyStore(keyFile));
+      expect(mode(dataDir.path), 0x1c0);
+      expect(mode(keyFile.path), 0x180);
+    }, skip: !Platform.isLinux ? 'File modes are set on Linux only' : false);
+  });
 }
