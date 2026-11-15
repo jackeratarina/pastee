@@ -1,9 +1,15 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 — 2026-11-15
 
 ### New
 - **Linux app** (x64 and arm64): a .deb for Ubuntu 22.04+, Debian 12+ and derivatives, and a tarball for other distributions. The summon shortcut defaults to **Ctrl+Alt+V**. On X11 Pastee registers it itself; on Wayland it asks the desktop through the GlobalShortcuts portal (GNOME 48+, KDE Plasma 5.27+, Hyprland). Where neither works, bind `pastee --toggle` in your desktop's keyboard settings. Items live encrypted in `~/.local/share/com.pastee.pastee`, in a folder only your account can open. Copied secrets clear themselves as on the other platforms and carry KDE's password-manager hint, which Klipper and clipboard managers that follow it skip. App Lock uses the passcode alone on Linux.
+- **Fields & numbers** (Settings → Fields & numbers…). Teach Pastee your own phrases, like `Member ID` or `Mã thành viên`, and it picks out the value after them as a field. Capitals, accents and extra spaces don't matter. Add a value pattern (a regular expression) to say what the value looks like, or use a pattern alone to pick out every match. Mark a phrase **secret** to mask it and copy it like a password.
+- **Choose the number that copies a field.** Give any field, yours or a built-in kind like passwords, a fixed number, so **⌘1** / **Ctrl+1** always copies the password, for example. Auto fields take the numbers left over, and the settings warn when two fields want the same number. Turn off built-in kinds you don't want as chips; a secret kind that's turned off stays masked.
+- A **Try it** box on the same page shows the chips and numbers for a sample note while you edit.
+
+### Fixed
+- Long field chips end in "…" instead of running past the edge of the item.
 
 ## 1.1.1 — 2026-11-15
 
