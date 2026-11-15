@@ -33,6 +33,11 @@ class _SettingsDialogState extends ConsumerState<SettingsDialog> {
   final FocusNode _recorderFocus = FocusNode(debugLabel: 'shortcut recorder');
   late final HotKeyNotifier _hotKeys = ref.read(hotKeyProvider.notifier);
   bool _recording = false;
+
+  /// The Super key is held, as seen by the recorder. Linux reports it as
+  /// superKey, which HardwareKeyboard doesn't count as meta, and its release
+  /// can go missing while Pastee's own shortcut holds the keyboard.
+  bool _superDown = false;
   String? _recordMessage;
   bool _deviceAvailable = false;
   String _deviceName = 'Touch ID';
@@ -46,6 +51,7 @@ class _SettingsDialogState extends ConsumerState<SettingsDialog> {
     LogicalKeyboardKey.altRight,
     LogicalKeyboardKey.metaLeft,
     LogicalKeyboardKey.metaRight,
+    LogicalKeyboardKey.superKey, // the Super (Windows) key on Linux
     LogicalKeyboardKey.capsLock,
     LogicalKeyboardKey.fn,
   };
@@ -165,6 +171,7 @@ class _SettingsDialogState extends ConsumerState<SettingsDialog> {
     setState(() {
       _recording = true;
       _recordMessage = null;
+      _superDown = false;
     });
     // Release the current shortcut so pressing it here records it instead of
     // hiding the window.
@@ -185,6 +192,10 @@ class _SettingsDialogState extends ConsumerState<SettingsDialog> {
   }
 
   KeyEventResult _onRecorderKey(FocusNode node, KeyEvent event) {
+    if (event.logicalKey == LogicalKeyboardKey.superKey) {
+      // A press can arrive as a repeat if the last release went missing.
+      _superDown = event is! KeyUpEvent;
+    }
     if (event is! KeyDownEvent) return KeyEventResult.handled;
     final key = event.logicalKey;
     if (key == LogicalKeyboardKey.escape) {
@@ -198,7 +209,7 @@ class _SettingsDialogState extends ConsumerState<SettingsDialog> {
       if (keyboard.isControlPressed) KeyModifier.control,
       if (keyboard.isAltPressed) KeyModifier.alt,
       if (keyboard.isShiftPressed) KeyModifier.shift,
-      if (keyboard.isMetaPressed) KeyModifier.meta,
+      if (keyboard.isMetaPressed || _superDown) KeyModifier.meta,
     };
     final spec = HotKeySpec.fromKeyEvent(event, modifiers);
     if (spec == null) {
@@ -312,6 +323,31 @@ class _SettingsDialogState extends ConsumerState<SettingsDialog> {
                     const SizedBox(height: 20),
                     const _SectionTitle('Summon shortcut'),
                     _HotKeyStatusLine(status: status),
+                    // Where Pastee can't set the shortcut (or it's off), a
+                    // system shortcut can run Pastee's toggle instead.
+                    if (isLinuxPlatform &&
+                        (status.error != null || current == null))
+                      Padding(
+                        padding: const EdgeInsets.only(left: 24, top: 2),
+                        child: SelectableText.rich(
+                          TextSpan(children: [
+                            const TextSpan(
+                                text:
+                                    'Or add a shortcut in your desktop\u2019s keyboard settings that runs '),
+                            TextSpan(
+                              text: linuxToggleCommand(),
+                              style: TextStyle(
+                                fontFamily: AppTheme.monoFont,
+                                fontFamilyFallback: AppTheme.monoFallback,
+                                color: cs.onSurface,
+                              ),
+                            ),
+                            const TextSpan(text: '.'),
+                          ]),
+                          style: theme.textTheme.bodySmall
+                              ?.copyWith(color: cs.onSurfaceVariant),
+                        ),
+                      ),
                     const SizedBox(height: 4),
                     RadioGroup<String>(
                       groupValue: _choiceFor(current, presets),
@@ -710,7 +746,7 @@ class _HotKeyStatusLine extends StatelessWidget {
       HotKeyStatus(supported: false) => (
           Icons.info_outline,
           cs.onSurfaceVariant,
-          'The summon shortcut works in the macOS and Windows apps.',
+          'The summon shortcut works in the macOS, Windows and Linux apps.',
         ),
       HotKeyStatus(error: final String error) => (
           Icons.error_outline,
