@@ -13,9 +13,13 @@ class AppTheme {
       ColorScheme.fromSeed(seedColor: _seed, brightness: Brightness.dark));
 
   /// A monospace family that exists on the platform ("monospace" is not a real
-  /// font name on macOS or Windows).
-  static String get monoFont =>
-      defaultTargetPlatform == TargetPlatform.macOS ? 'Menlo' : 'Consolas';
+  /// font name on macOS or Windows; on Linux, fontconfig maps it to the
+  /// system's monospace font).
+  static String get monoFont => switch (defaultTargetPlatform) {
+        TargetPlatform.macOS => 'Menlo',
+        TargetPlatform.linux => 'monospace',
+        _ => 'Consolas',
+      };
 
   static const monoFallback = ['Menlo', 'Consolas', 'Courier New', 'monospace'];
 

@@ -2,7 +2,9 @@ import 'package:flutter/foundation.dart';
 import 'package:local_auth/local_auth.dart';
 
 /// The operating system's own unlock: Touch ID (or the Mac login password)
-/// on macOS, Windows Hello (fingerprint, face or PIN) on Windows.
+/// on macOS, Windows Hello (fingerprint, face or PIN) on Windows. local_auth
+/// has no Linux implementation, so on Linux App Lock is the passcode alone and
+/// the option isn't offered.
 abstract class DeviceAuthenticator {
   /// Whether this computer can do it at all.
   Future<bool> isAvailable();
