@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### New
+- **Linux app** (x64 and arm64): a .deb for Ubuntu 22.04+, Debian 12+ and derivatives, and a tarball for other distributions. The summon shortcut defaults to **Ctrl+Alt+V**. On X11 Pastee registers it itself; on Wayland it asks the desktop through the GlobalShortcuts portal (GNOME 48+, KDE Plasma 5.27+, Hyprland). Where neither works, bind `pastee --toggle` in your desktop's keyboard settings. Items live encrypted in `~/.local/share/com.pastee.pastee`, in a folder only your account can open. Copied secrets clear themselves as on the other platforms and carry KDE's password-manager hint, which Klipper and clipboard managers that follow it skip. App Lock uses the passcode alone on Linux.
+
 ## 1.1.1 — 2026-11-15
 
 ### Privacy

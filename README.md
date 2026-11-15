@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue" alt="Platform"/>
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-blue" alt="Platform"/>
   <img src="https://img.shields.io/badge/flutter-3.47-02569B?logo=flutter" alt="Flutter"/>
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License"/>
   <a href="https://github.com/jackeratarina/pastee/actions/workflows/build.yml"><img src="https://github.com/jackeratarina/pastee/actions/workflows/build.yml/badge.svg" alt="Build"/></a>
@@ -24,19 +24,31 @@ Get the latest version from **[Releases](https://github.com/jackeratarina/pastee
 | **macOS 12+** | `Pastee-<version>-macos.dmg` | Universal (Apple silicon and Intel). Drag Pastee into Applications. |
 | **Windows 10/11** | `Pastee-<version>-windows-x64-setup.exe` | Installs for your user, no admin rights needed. Can start Pastee at sign-in. |
 | | `Pastee-<version>-windows-x64.zip` | Portable: unzip anywhere and run `pastee.exe`. |
+| **Linux** (x64, arm64) | `Pastee-<version>-linux-x64.deb` (or `-arm64.deb`) | Ubuntu 22.04+, Debian 12+ and derivatives: `sudo apt install ./Pastee-<version>-linux-x64.deb`. |
+| | `Pastee-<version>-linux-x64.tar.gz` (or `-arm64.tar.gz`) | Any distribution with GTK 3 and glibc 2.34+: unpack anywhere and run `pastee/pastee`. |
 
 The builds are not code-signed yet, so the first launch shows a warning:
 
 - **macOS:** open Pastee, click **Done** on the warning, then go to **System Settings → Privacy & Security** and click **Open Anyway**. (Or run `xattr -dr com.apple.quarantine /Applications/Pastee.app`.)
 - **Windows:** on "Windows protected your PC", click **More info → Run anyway**.
 
+### Linux
+
+- **Summon shortcut on X11:** Pastee registers **Ctrl+Alt+V** itself, like on Windows, and tells you if another app already owns it.
+- **On Wayland,** apps can't grab keys. Pastee asks your desktop through the XDG GlobalShortcuts portal, which GNOME 48+, KDE Plasma 5.27+ and Hyprland provide; the desktop may ask you to confirm the shortcut, and you can change it in its keyboard settings. Elsewhere (GNOME 47 and older, which includes Ubuntu 24.04, Sway and other wlroots desktops), Settings says the desktop doesn't let apps set a shortcut: add one in your desktop's keyboard settings that runs `pastee --toggle` (with the tarball, the path to `pastee/pastee --toggle`). For example, GNOME: **Settings → Keyboard → View and Customize Shortcuts → Custom Shortcuts**; KDE: **System Settings → Shortcuts → Add New → Command**; Sway: `bindsym Ctrl+Alt+v exec pastee --toggle`.
+- `pastee --toggle` works on X11 too. Starting `pastee` while it runs brings the window forward.
+- Hiding Pastee minimizes it, so it stays in the taskbar, dock and Alt+Tab. Closing the window quits it, like on Windows.
+- To start Pastee when you log in, add it to your desktop's startup applications, or copy `/usr/share/applications/com.pastee.pastee.desktop` to `~/.config/autostart/`.
+- App Lock uses the passcode only: there is no Touch ID or Windows Hello equivalent on Linux.
+- Uninstall with `sudo apt remove pastee`; your items stay in `~/.local/share/com.pastee.pastee` until you delete it.
+
 ## Features
 
-- **Summon from anywhere.** Press **⌃⌘V** (macOS) or **Alt+Shift+V** (Windows) in any app to show or hide Pastee. Copy a field and Pastee hides itself again, so your next paste lands where you were.
+- **Summon from anywhere.** Press **⌃⌘V** (macOS), **Alt+Shift+V** (Windows) or **Ctrl+Alt+V** (Linux) in any app to show or hide Pastee. Copy a field and Pastee hides itself again, so your next paste lands where you were.
 - **Clipboard capture.** Paste anything with `⌘V` / `Ctrl+V`. Duplicates are detected and skipped.
 - **Smart field extraction.** Up to 9 copyable fields per item: passwords, usernames, emails, links, phone numbers, order and invoice numbers, IP addresses, API keys, card numbers, one-time codes, and any `Key: value` line. English and Vietnamese labels.
 - **Your own fields and numbers.** Teach Pastee your own phrases ("Member ID", "Mã thành viên") or patterns, and choose which number copies what, e.g. `⌘1` always the password. See [Fields & numbers](#fields--numbers).
-- **App Lock.** Ask for a passcode, Touch ID or Windows Hello before Pastee shows anything: when it starts, and again after a time away that you choose. `⌘L` locks it right away.
+- **App Lock.** Ask for a passcode, Touch ID or Windows Hello (passcode only on Linux) before Pastee shows anything: when it starts, and again after a time away that you choose. `⌘L` locks it right away.
 - **Password masking.** Detected secrets show as `••••••••` everywhere until you click the eye. Copying always gets the real value. Mark any item **always hidden** with the lock.
 - **Instant copy.** `⌘C` copies the top item, `⌘1`–`⌘9` copies one of its fields, and `Enter` copies the top search result.
 - **Cut, delete, undo.** `⌘X` cuts the top item, `Delete` removes it, and `⌘Z` brings it back.
@@ -48,11 +60,11 @@ The builds are not code-signed yet, so the first launch shows a warning:
 
 ## Keyboard shortcuts
 
-On Windows, use `Ctrl` wherever macOS uses `⌘`.
+On Windows and Linux, use `Ctrl` wherever macOS uses `⌘`.
 
 | Shortcut | Action |
 |---|---|
-| **⌃⌘V** / **Alt+Shift+V** | Show or hide Pastee from any app (changeable in Settings) |
+| **⌃⌘V** / **Alt+Shift+V** / **Ctrl+Alt+V** | Show or hide Pastee from any app (macOS / Windows / Linux, changeable in Settings) |
 | `⌘V` | Save what's on the clipboard as a new item |
 | `⌘C` or `Enter` | Copy the top item |
 | `⌘1`–`⌘9` | Copy the top item's field with that number |
@@ -79,9 +91,16 @@ Settings suggests shortcuts that don't clash with the system or common apps:
 | ⌥⌘V | Finder uses it to move files | Win+Alt+V | Rarely taken |
 | ⌃⌥Space | Rarely taken | Ctrl+Alt+V | Office Paste Special; types a character on some layouts |
 
-You can also record your own. It needs two modifier keys, and Pastee tells you if another app already owns it.
+| Linux | |
+|---|---|
+| **Ctrl+Alt+V** | Recommended: no desktop binds it by default; GPaste and JetBrains IDEs use it |
+| Alt+Super+V | Free in GNOME, KDE and Xfce, rarely taken by apps |
+| Shift+Super+V | Popular with clipboard apps; GNOME clipboard extensions like Pano use it |
+| Ctrl+Alt+Space | Rarely taken |
+
+You can also record your own. It needs two modifier keys, and Pastee tells you if another app already owns it (or, on Linux, what the desktop uses it for: Ctrl+Alt+T, Ctrl+Alt+L, Ctrl+Alt+F1–F12 and others are refused).
 On macOS, closing the window (or `⌘W`) keeps Pastee running so the shortcut keeps working; quit with `⌘Q`.
-To have Pastee ready after you log in, add it under **System Settings → General → Login Items** (macOS) or tick **Start Pastee when I sign in** in the installer (Windows).
+To have Pastee ready after you log in, add it under **System Settings → General → Login Items** (macOS), tick **Start Pastee when I sign in** in the installer (Windows), or add it to your desktop's startup applications (Linux).
 
 ## Fields & numbers
 
@@ -99,19 +118,21 @@ Patterns are checked for speed before they're saved. They are case-sensitive and
 - Items are stored with AES-256 encryption (Hive) in the app's data folder:
   - macOS: `~/Library/Application Support/com.pastee.pastee/data`
   - Windows: `%APPDATA%\com.pastee\Pastee\data`
+  - Linux: `~/.local/share/com.pastee.pastee/data`
 - On Windows, the encryption key is protected with DPAPI, so only your Windows account on this PC can unlock it.
+- On Linux, the key sits next to the data in a folder only your user account can open (mode 0700; the key file is 0600). As on macOS, a copy of the data file on its own can't be read, but software running as you could read both. (The Secret Service keyring isn't used yet.)
 - On macOS, the key sits next to the data in your private Library folder. A copy of the data file on its own can't be read, but software running as you could read both. (Unsigned Mac apps can't use the keychain or the App Sandbox without macOS asking for permission after every update, so Pastee uses neither until it has a signed build.)
 - Pastee 1.0 kept an unencrypted file in Documents (on macOS, inside its sandbox container). 1.1 moves those items into encrypted storage on first launch and deletes the old file. On macOS, the system may ask once whether Pastee can access data from other apps: that's the old container.
-- **App Lock** (Settings → App Lock) puts a passcode of 6 or more characters in front of Pastee, optionally with Touch ID (or your Mac password) or Windows Hello. It locks when Pastee starts, and again after the time away or idle you pick, from "as soon as it's hidden" to "only when Pastee starts". When the summon shortcut hides Pastee, it draws the lock screen or a blank cover first, so taskbar, Alt+Tab and Exposé previews don't show your items. Pastee keeps only a salted PBKDF2 hash of the passcode, repeated wrong guesses add a wait that a restart doesn't reset, and loosening the lock or adding Touch ID needs the passcode. If you forget the passcode, the lock screen can erase your items and turn the lock off once you type ERASE; Pastee can't recover it. App Lock keeps people at your computer out of Pastee. Your items are already encrypted on disk.
+- **App Lock** (Settings → App Lock) puts a passcode of 6 or more characters in front of Pastee, optionally with Touch ID (or your Mac password) or Windows Hello (not available on Linux). It locks when Pastee starts, and again after the time away or idle you pick, from "as soon as it's hidden" to "only when Pastee starts". When the summon shortcut hides Pastee, it draws the lock screen or a blank cover first, so taskbar, Alt+Tab and Exposé previews don't show your items. Pastee keeps only a salted PBKDF2 hash of the passcode, repeated wrong guesses add a wait that a restart doesn't reset, and loosening the lock or adding Touch ID needs the passcode. If you forget the passcode, the lock screen can erase your items and turn the lock off once you type ERASE; Pastee can't recover it. App Lock keeps people at your computer out of Pastee. Your items are already encrypted on disk.
 - Masking hides secrets on screen (screen sharing, someone looking over your shoulder).
-- **Copying a secret** (a detected password, code or key, or anything from an item set to always hide) empties the clipboard again after 30 seconds, unless you copied something else since; pick the delay or Never in Settings → Privacy. On Windows those copies are kept out of clipboard history (Win+V) and cloud clipboard sync. On macOS they're marked as concealed, so clipboard managers that follow the convention skip them, and they aren't sent to your other devices through Universal Clipboard. Anything else you copy is a normal clipboard entry.
+- **Copying a secret** (a detected password, code or key, or anything from an item set to always hide) empties the clipboard again after 30 seconds, unless you copied something else since; pick the delay or Never in Settings → Privacy. On Windows those copies are kept out of clipboard history (Win+V) and cloud clipboard sync. On macOS they're marked as concealed, so clipboard managers that follow the convention skip them, and they aren't sent to your other devices through Universal Clipboard. On Linux they carry KDE's password-manager hint, which Klipper and clipboard managers that follow it skip. Anything else you copy is a normal clipboard entry.
 - Deleting or editing an item rewrites the storage file at once, so no copy of the old version stays on disk (1.1.0 and earlier kept one until enough deletions had piled up).
 - App Lock guards the window, not the files: it doesn't add encryption of its own. On macOS, something that can read your files as you can read Pastee's too. Turn on FileVault, and encrypt Time Machine backups, to protect them when the Mac is off or a backup is lost.
 - If you used Pastee 1.0 with a Documents folder that syncs to OneDrive, its old unencrypted `paste_items.hive` may still be in OneDrive's recycle bin or version history. Empty it there to be sure.
 
 ## Build from source
 
-Requires [Flutter](https://docs.flutter.dev/get-started/install) 3.47 or later, plus Xcode (macOS) or Visual Studio 2022 with "Desktop development with C++" (Windows). The first Windows build downloads two NuGet packages for Windows Hello support, so it needs internet access.
+Requires [Flutter](https://docs.flutter.dev/get-started/install) 3.47 or later, plus Xcode (macOS), Visual Studio 2022 with "Desktop development with C++" (Windows), or on Linux `clang cmake ninja-build pkg-config libgtk-3-dev` (Ubuntu/Debian package names). The first Windows build downloads two NuGet packages for Windows Hello support, so it needs internet access.
 
 ```bash
 git clone https://github.com/jackeratarina/pastee.git
@@ -119,15 +140,15 @@ cd pastee
 flutter pub get
 flutter test
 
-flutter run -d macos      # or: flutter run -d windows
-flutter build macos       # or: flutter build windows
+flutter run -d macos      # or: flutter run -d windows / -d linux
+flutter build macos       # or: flutter build windows / linux
 ```
 
 ### Releasing
 
 1. Bump `version:` in `pubspec.yaml` and add a section for it to `CHANGELOG.md`.
 2. Commit, then tag and push: `git tag v1.2.0 && git push origin main v1.2.0`.
-3. GitHub Actions ([build.yml](.github/workflows/build.yml)) tests the code, builds both apps, and publishes a release with the DMG, the Windows installer and zip, and checksums.
+3. GitHub Actions ([build.yml](.github/workflows/build.yml)) tests the code, builds the apps, and publishes a release with the DMG, the Windows installer and zip, the Linux .deb packages and tarballs (x64 and arm64), and checksums.
 
 ## Project structure
 
@@ -158,6 +179,9 @@ lib/
 macos/Runner/MainFlutterWindow.swift   # Global shortcut (Carbon) and show/hide
 windows/runner/flutter_window.cpp      # Global shortcut (RegisterHotKey) and show/hide
 windows/installer/pastee.iss           # Windows installer (Inno Setup)
+linux/runner/native_bridge.cc          # Show/hide, clipboard, `pastee --toggle`
+linux/runner/global_hotkey.cc          # Global shortcut (X11 grab, Wayland portal)
+linux/packaging/                       # .deb and tarball, CI smoke test
 ```
 
 ## Tech stack
