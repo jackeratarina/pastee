@@ -35,6 +35,7 @@ The builds are not code-signed yet, so the first launch shows a warning:
 - **Summon from anywhere.** Press **⌃⌘V** (macOS) or **Alt+Shift+V** (Windows) in any app to show or hide Pastee. Copy a field and Pastee hides itself again, so your next paste lands where you were.
 - **Clipboard capture.** Paste anything with `⌘V` / `Ctrl+V`. Duplicates are detected and skipped.
 - **Smart field extraction.** Up to 9 copyable fields per item: passwords, usernames, emails, links, phone numbers, order and invoice numbers, IP addresses, API keys, card numbers, one-time codes, and any `Key: value` line. English and Vietnamese labels.
+- **Your own fields and numbers.** Teach Pastee your own phrases ("Member ID", "Mã thành viên") or patterns, and choose which number copies what, e.g. `⌘1` always the password. See [Fields & numbers](#fields--numbers).
 - **App Lock.** Ask for a passcode, Touch ID or Windows Hello before Pastee shows anything: when it starts, and again after a time away that you choose. `⌘L` locks it right away.
 - **Password masking.** Detected secrets show as `••••••••` everywhere until you click the eye. Copying always gets the real value. Mark any item **always hidden** with the lock.
 - **Instant copy.** `⌘C` copies the top item, `⌘1`–`⌘9` copies one of its fields, and `Enter` copies the top search result.
@@ -54,7 +55,7 @@ On Windows, use `Ctrl` wherever macOS uses `⌘`.
 | **⌃⌘V** / **Alt+Shift+V** | Show or hide Pastee from any app (changeable in Settings) |
 | `⌘V` | Save what's on the clipboard as a new item |
 | `⌘C` or `Enter` | Copy the top item |
-| `⌘1`–`⌘9` | Copy field 1–9 of the top item |
+| `⌘1`–`⌘9` | Copy the top item's field with that number |
 | `⌘X` | Cut the top item (copy, then delete) |
 | `Delete` / `Backspace` | Delete the top item |
 | `⌘Z` | Undo the last delete or cut |
@@ -81,6 +82,17 @@ Settings suggests shortcuts that don't clash with the system or common apps:
 You can also record your own. It needs two modifier keys, and Pastee tells you if another app already owns it.
 On macOS, closing the window (or `⌘W`) keeps Pastee running so the shortcut keeps working; quit with `⌘Q`.
 To have Pastee ready after you log in, add it under **System Settings → General → Login Items** (macOS) or tick **Start Pastee when I sign in** in the installer (Windows).
+
+## Fields & numbers
+
+**Settings → Fields & numbers…** controls which fields Pastee picks out of a note, and which number key copies each one.
+
+- **Your phrases.** Add a name (shown on the chip) and the phrases that label the value, such as `member id, mã thành viên`. Pastee finds them whatever the capitals or accents ("ma thanh vien" matches "Mã thành viên") and takes the text after the phrase, past a `:`, `=`, `-` or space. If nothing follows on that line, it takes the next line. Add a **value pattern** (a regular expression such as `[A-Z0-9]{5}`) to say what the value looks like, or use a pattern with no phrase to pick out every match, like `KH-\d+`. Turn on **Secret** to mask the value like a password and handle it like one when copied.
+- **Numbers.** Give any field a number from 1 to 9, or leave it on **Auto**. A field with a number keeps it; if two want the same one, the one that comes first in the note gets it. Auto fields take the numbers left over, in reading order. Leave everything on Auto and numbering works as before.
+- **Built-in fields.** Turn off kinds you don't want as chips (say, phone numbers), or give one a number, like passwords on `⌘1`. A secret kind that's turned off loses its chip but stays masked.
+- **Try it.** Paste a sample note at the bottom of the page to see the chips and their numbers as you edit.
+
+Patterns are checked for speed before they're saved. They are case-sensitive and run one line at a time.
 
 ## Privacy
 
