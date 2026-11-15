@@ -54,6 +54,39 @@ void main() {
     expect(storage.report.unreadableBackup, isNull);
   });
 
+  test('deleting or editing an item leaves no old copy in the file', () async {
+    final storage = await Storage.open(dataDir: dataDir, keyStore: keyStore());
+    final file = File(p.join(dataDir.path, 'pastes.hive'));
+    await storage.pastes.put(item('1', 'password: Tr0ub4dor&3'));
+    final oneRecord = await file.length();
+
+    // Hive appends the new version; compaction drops the old one.
+    await storage.pastes.put(item('1', 'password: Tr0ub4dor&4'));
+    expect(await file.length(), oneRecord);
+
+    await storage.pastes.delete('1');
+    expect(await file.length(), 0);
+    expect(storage.pastes.getAll(), isEmpty);
+  });
+
+  test('opening the store removes what 1.1.0 left behind after deleting',
+      () async {
+    var storage = await Storage.open(dataDir: dataDir, keyStore: keyStore());
+    await storage.pastes.put(item('1', 'keep me'));
+    final file = File(p.join(dataDir.path, 'pastes.hive'));
+    final oneRecord = await file.length();
+    // What 1.1.0 did: delete without compacting.
+    final box = Hive.box<PasteItem>(Storage.pastesBox);
+    await box.put('2', item('2', 'password: Tr0ub4dor&3'));
+    await box.delete('2');
+    await Hive.close();
+    expect(await file.length(), greaterThan(oneRecord));
+
+    storage = await Storage.open(dataDir: dataDir, keyStore: keyStore());
+    expect(storage.pastes.getAll().single.content, 'keep me');
+    expect(await file.length(), oneRecord);
+  });
+
   test('a lost key never wipes the old file: it is moved aside', () async {
     var storage = await Storage.open(dataDir: dataDir, keyStore: keyStore());
     await storage.pastes.put(item('1', 'precious'));
