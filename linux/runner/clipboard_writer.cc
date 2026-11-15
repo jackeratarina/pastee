@@ -2,10 +2,15 @@
 
 #include <cstring>
 
+#ifdef GDK_WINDOWING_X11
+#include <X11/Xlib.h>
+#include <gdk/gdkx.h>
+#endif
+
 namespace {
 
-// KDE's convention, also followed by CopyQ and other clipboard managers: text
-// offered with this target set to "secret" is left out of their history.
+// KDE's convention: Klipper, and clipboard managers that follow it, leave text
+// offered with this target set to "secret" out of their history.
 constexpr char kPasswordHintTarget[] = "x-kde-passwordManagerHint";
 constexpr char kPasswordHintValue[] = "secret";
 
@@ -54,26 +59,28 @@ int64_t ClipboardWriter::Write(const gchar* text, bool concealed,
       clipboard_, targets, n_targets, GetContents, ContentsCleared, entry);
   gtk_target_table_free(targets, n_targets);
 
+  if (!taken) {
+    // Nothing changed, and GTK won't call ContentsCleared for this data. Dart
+    // falls back to Flutter's clipboard.
+    g_warning("Could not take the clipboard");
+    entry->owner = nullptr;
+    ContentsCleared(clipboard_, entry);
+    return 0;
+  }
   change_count_++;
   g_debug("clipboard: wrote%s, change %" G_GINT64_FORMAT,
           concealed ? " (concealed)" : "", change_count_);
-  if (taken) {
-    current_ = entry;
-    // Like other GTK apps, let a clipboard manager keep the text once Pastee
-    // quits (X11) - except a secret that should go when Pastee does.
-    if (!(concealed && clear_on_exit)) {
-      gtk_clipboard_set_can_store(clipboard_, nullptr, 0);
-    }
-  } else {
-    // GTK didn't take the data, so it won't call ContentsCleared for it.
-    entry->owner = nullptr;
-    ContentsCleared(clipboard_, entry);
+  current_ = entry;
+  // Like other GTK apps, let a clipboard manager keep the text once Pastee
+  // quits (X11) - except a secret that should go when Pastee does.
+  if (!(concealed && clear_on_exit)) {
+    gtk_clipboard_set_can_store(clipboard_, nullptr, 0);
   }
   return change_count_;
 }
 
 bool ClipboardWriter::Clear(int64_t change_count) {
-  if (current_ == nullptr || change_count != change_count_) {
+  if (current_ == nullptr || change_count != change_count_ || !StillOwned()) {
     return false;
   }
   // Gives the clipboard up; ContentsCleared runs before this returns.
@@ -83,10 +90,29 @@ bool ClipboardWriter::Clear(int64_t change_count) {
 }
 
 void ClipboardWriter::ClearOnExit() {
-  if (current_ != nullptr && current_->concealed && current_->clear_on_exit) {
+  if (current_ != nullptr && current_->concealed && current_->clear_on_exit &&
+      StillOwned()) {
     gtk_clipboard_clear(clipboard_);
     g_debug("clipboard: cleared at exit");
   }
+}
+
+// GTK hears that another app copied only when it handles that event, which
+// may still be queued (and at exit, events are no longer handled). Clearing
+// then would empty the other app's copy, so on X11 ask the server.
+bool ClipboardWriter::StillOwned() const {
+#ifdef GDK_WINDOWING_X11
+  GdkDisplay* display = gtk_clipboard_get_display(clipboard_);
+  if (GDK_IS_X11_DISPLAY(display)) {
+    const Window owner = XGetSelectionOwner(
+        GDK_DISPLAY_XDISPLAY(display),
+        gdk_x11_get_xatom_by_name_for_display(display, "CLIPBOARD"));
+    // GTK holds selections with a window of its own.
+    return owner != None &&
+           gdk_x11_window_lookup_for_display(display, owner) != nullptr;
+  }
+#endif
+  return true;
 }
 
 void ClipboardWriter::GetContents(GtkClipboard* clipboard,
