@@ -8,6 +8,7 @@ import '../model/hotkey.dart';
 import '../providers/providers.dart';
 import '../services/app_lock.dart';
 import '../version.dart';
+import 'field_settings_dialog.dart';
 import 'key_cap.dart';
 import 'passcode_dialogs.dart';
 import 'shortcut_labels.dart';
@@ -500,6 +501,8 @@ class _SettingsDialogState extends ConsumerState<SettingsDialog> {
                           .read(settingsProvider.notifier)
                           .setThemeMode(s.first),
                     ),
+                    const SizedBox(height: 20),
+                    const FieldsSettingsEntry(),
                     const SizedBox(height: 20),
                     const _SectionTitle('Keyboard shortcuts in Pastee'),
                     for (final (keys, action) in inAppShortcuts())
