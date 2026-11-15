@@ -6,6 +6,8 @@ import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 
+import 'file_permissions.dart';
+
 /// Wraps the box encryption key before it is written to disk.
 abstract class KeyProtector {
   /// Stored in the key file so a file written by one protector is never fed
@@ -15,12 +17,13 @@ abstract class KeyProtector {
   Uint8List unprotect(Uint8List data);
 }
 
-/// Stores the key as-is, in the user's private Library folder on macOS. This
-/// keeps the data file unreadable if it is copied somewhere on its own; the
-/// folder itself is only readable by your user account. (The login keychain
-/// would ask for your password after every update of an unsigned build, and
-/// the App Sandbox would ask for permission to open Pastee's own data, so
-/// neither is used.)
+/// Stores the key as-is: in the user's private Library folder on macOS, and
+/// on Linux in a data folder (mode 0700) and key file (0600) only your user
+/// account can open. This keeps the data file unreadable if it is copied
+/// somewhere on its own. (On macOS the login keychain would ask for your
+/// password after every update of an unsigned build, and the App Sandbox would
+/// ask for permission to open Pastee's own data, so neither is used. On Linux,
+/// libsecret isn't used yet.)
 class PlainKeyProtector implements KeyProtector {
   const PlainKeyProtector();
 
@@ -166,6 +169,7 @@ class FileKeyStore {
   Future<LoadedKey> loadOrCreate() async {
     String? backup;
     if (await file.exists()) {
+      restrictToOwner(file.path, directory: false);
       final key = _tryRead(await file.readAsBytes());
       if (key != null) return LoadedKey(key, created: false);
       backup =
@@ -178,6 +182,9 @@ class FileKeyStore {
     final wrapped = protector.protect(key);
     await file.parent.create(recursive: true);
     final tmp = File('${file.path}.tmp');
+    // Private before the key goes in (Linux; see restrictToOwner).
+    await tmp.create();
+    restrictToOwner(tmp.path, directory: false);
     await tmp.writeAsBytes([..._magic, _version, protector.id, ...wrapped],
         flush: true);
     await tmp.rename(file.path);

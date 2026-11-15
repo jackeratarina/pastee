@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../model/paste_item.dart';
+import 'file_permissions.dart';
 import 'key_store.dart';
 import 'paste_titles.dart';
 import 'text_utils.dart';
@@ -153,7 +154,8 @@ class Storage {
 
   /// Opens storage in the platform's application-support folder:
   /// `~/Library/Application Support/com.pastee.pastee/data` on macOS,
-  /// `%APPDATA%\\com.pastee\\Pastee\\data` on Windows.
+  /// `%APPDATA%\\com.pastee\\Pastee\\data` on Windows,
+  /// `~/.local/share/com.pastee.pastee/data` on Linux.
   static Future<OpenedStorage> openDefault() async {
     final support = await getApplicationSupportDirectory();
     final dataDir = Directory(p.join(support.path, 'data'));
@@ -196,6 +198,7 @@ class Storage {
     Directory? legacyDir,
   }) async {
     await dataDir.create(recursive: true);
+    restrictToOwner(dataDir.path, directory: true);
     Hive.init(dataDir.path);
     if (!Hive.isAdapterRegistered(PasteItemAdapter().typeId)) {
       Hive.registerAdapter(PasteItemAdapter());
