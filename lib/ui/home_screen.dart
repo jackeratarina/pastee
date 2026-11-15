@@ -486,8 +486,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     LogicalKeyboardKey.digit9: 9,
   };
 
-  /// ⌘ on macOS, Ctrl on Windows. AltGr reaches apps as Ctrl+Alt and types
-  /// characters such as @ { [ on many layouts, so Ctrl+Alt doesn't count.
+  /// ⌘ on macOS, Ctrl on Windows and Linux. AltGr reaches apps as Ctrl+Alt
+  /// and types characters such as @ { [ on many layouts, so Ctrl+Alt doesn't
+  /// count.
   bool get _primaryModifierPressed {
     final keyboard = HardwareKeyboard.instance;
     if (isMacPlatform) return keyboard.isMetaPressed;

@@ -194,8 +194,8 @@ final summonedProvider = StateProvider<bool>((ref) => false);
 // ── window: summon, hide, privacy cover ──────────────────────────────────
 
 /// Drawn over the items while Pastee is hidden with App Lock on, so the
-/// window's last frame (which Windows and macOS reuse for taskbar, Alt+Tab
-/// and Exposé previews) never shows them.
+/// window's last frame (which macOS, Windows and Linux desktops reuse for
+/// taskbar, Alt+Tab and Exposé previews) never shows them.
 final privacyCoverProvider = StateProvider<bool>((ref) => false);
 
 /// Storage notices (migration, unreadable data) are shown once per run, not
