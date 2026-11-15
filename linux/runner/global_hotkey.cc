@@ -80,10 +80,15 @@ class X11KeyGrab {
   X11KeyGrab(GdkDisplay* display, GlobalHotKey::PressedCallback on_pressed);
   ~X11KeyGrab();
 
+  // Grabs the shortcut, and grabs it again whenever the keyboard layout
+  // changes, until Ungrab.
   int Grab(guint keyval, guint modifiers);
   void Ungrab();
 
  private:
+  int GrabWanted();
+  void Release();
+
   static GdkFilterReturn Filter(GdkXEvent* gdk_xevent, GdkEvent* event,
                                 gpointer data);
   static void OnKeysChanged(GdkKeymap* keymap, gpointer data);
@@ -93,11 +98,15 @@ class X11KeyGrab {
   GlobalHotKey::PressedCallback on_pressed_;
   gulong keys_changed_handler_ = 0;
 
+  // The shortcut asked for.
+  bool wanted_ = false;
   guint keyval_ = 0;
   guint modifiers_ = 0;
-  // The grabbed key, or 0.
+  // What is grabbed: the key (0 for nothing, also while the layout lacks the
+  // key), its modifiers, the lock-key states grabbed along with them, and all
+  // lock masks.
   KeyCode keycode_ = 0;
-  // The lock-key states grabbed along with |modifiers_|, and all lock masks.
+  guint grabbed_modifiers_ = 0;
   std::vector<unsigned int> lock_states_;
   unsigned int lock_masks_ = 0;
 
@@ -124,9 +133,22 @@ X11KeyGrab::~X11KeyGrab() {
 }
 
 int X11KeyGrab::Grab(guint keyval, guint modifiers) {
-  Ungrab();
+  wanted_ = true;
+  keyval_ = keyval;
+  modifiers_ = modifiers;
+  return GrabWanted();
+}
+
+void X11KeyGrab::Ungrab() {
+  wanted_ = false;
+  Release();
+}
+
+int X11KeyGrab::GrabWanted() {
+  Release();
+  const guint modifiers = modifiers_;
   Display* xdisplay = GDK_DISPLAY_XDISPLAY(display_);
-  const KeyCode keycode = XKeysymToKeycode(xdisplay, keyval);
+  const KeyCode keycode = XKeysymToKeycode(xdisplay, keyval_);
   if (keycode == 0) {
     return kHotKeyNoSuchKey;
   }
@@ -169,16 +191,15 @@ int X11KeyGrab::Grab(guint keyval, guint modifiers) {
     return error;
   }
 
-  keyval_ = keyval;
-  modifiers_ = modifiers;
   keycode_ = keycode;
+  grabbed_modifiers_ = modifiers;
   lock_states_ = std::move(lock_states);
   lock_masks_ = lock_masks;
   held_ = false;
   return kHotKeyOk;
 }
 
-void X11KeyGrab::Ungrab() {
+void X11KeyGrab::Release() {
   if (keycode_ == 0) {
     return;
   }
@@ -186,7 +207,7 @@ void X11KeyGrab::Ungrab() {
   const Window root = GDK_WINDOW_XID(root_);
   gdk_x11_display_error_trap_push(display_);
   for (unsigned int locks : lock_states_) {
-    XUngrabKey(xdisplay, keycode_, modifiers_ | locks, root);
+    XUngrabKey(xdisplay, keycode_, grabbed_modifiers_ | locks, root);
   }
   // Released now, not at the next flush: the shortcut recorder needs the keys.
   XFlush(xdisplay);
@@ -211,7 +232,7 @@ GdkFilterReturn X11KeyGrab::Filter(GdkXEvent* gdk_xevent, GdkEvent* event,
   }
   // The low 8 bits are the modifiers (the rest is the XKB group and buttons).
   const unsigned int state = xevent->xkey.state & 0xff & ~self->lock_masks_;
-  if (state != self->modifiers_) {
+  if (state != self->grabbed_modifiers_) {
     return GDK_FILTER_CONTINUE;
   }
   // Holding the keys down repeats the press. Only the first one counts, so
@@ -229,15 +250,19 @@ GdkFilterReturn X11KeyGrab::Filter(GdkXEvent* gdk_xevent, GdkEvent* event,
 
 void X11KeyGrab::OnKeysChanged(GdkKeymap* keymap, gpointer data) {
   auto* self = static_cast<X11KeyGrab*>(data);
-  if (self->keycode_ == 0 ||
-      XKeysymToKeycode(GDK_DISPLAY_XDISPLAY(self->display_), self->keyval_) ==
-          self->keycode_) {
+  if (!self->wanted_) {
     return;
   }
-  // The new keyboard layout has the key somewhere else.
-  const int status = self->Grab(self->keyval_, self->modifiers_);
+  const KeyCode keycode =
+      XKeysymToKeycode(GDK_DISPLAY_XDISPLAY(self->display_), self->keyval_);
+  if (keycode != 0 && keycode == self->keycode_) {
+    return;
+  }
+  // The new keyboard layout has the key somewhere else, or has it again
+  // after a layout without it.
+  const int status = self->GrabWanted();
   if (status != kHotKeyOk) {
-    g_warning("The summon shortcut is lost after a keyboard change (%d)",
+    g_warning("The summon shortcut doesn't work with this keyboard layout (%d)",
               status);
   }
 }
@@ -250,11 +275,33 @@ class X11KeyGrab {};
 
 // ── Wayland: org.freedesktop.portal.GlobalShortcuts ───────────────────────
 
+namespace {
+
+// After the portal goes away, how long to wait before asking it (and with
+// that, D-Bus activation) to bind the shortcut again.
+constexpr guint kRebindDelaySeconds = 2;
+
+// The portal isn't installed, or has no GlobalShortcuts backend for this
+// desktop. Other errors (time-outs, a portal still starting) may pass.
+bool IsMissingPortal(const GError* error) {
+  return g_error_matches(error, G_DBUS_ERROR, G_DBUS_ERROR_SERVICE_UNKNOWN) ||
+         g_error_matches(error, G_DBUS_ERROR, G_DBUS_ERROR_UNKNOWN_INTERFACE) ||
+         g_error_matches(error, G_DBUS_ERROR, G_DBUS_ERROR_UNKNOWN_PROPERTY) ||
+         g_error_matches(error, G_DBUS_ERROR, G_DBUS_ERROR_UNKNOWN_METHOD) ||
+         g_error_matches(error, G_DBUS_ERROR, G_DBUS_ERROR_UNKNOWN_OBJECT) ||
+         // What GDBus's own Properties.Get answers for an interface the
+         // object doesn't have.
+         g_error_matches(error, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS);
+}
+
+}  // namespace
+
 // One shortcut in a GlobalShortcuts portal session, on a D-Bus connection of
-// its own (the portal identifies a host app by its connection, see Connect).
-// The portal binds a session's shortcuts only once, so a different trigger
-// means a new session. The desktop may show a dialog to confirm the shortcut
-// and decides the final key; the user can change it in the system settings.
+// its own (the portal identifies a host app by its connection, see
+// ConnectionReady). The portal binds a session's shortcuts only once, so a
+// different trigger means a new session. The desktop may show a dialog to
+// confirm the shortcut and decides the final key; the user can change it in
+// the system settings. If the portal restarts, the shortcut is bound again.
 class PortalShortcut {
  public:
   explicit PortalShortcut(GlobalHotKey::PressedCallback on_pressed);
@@ -272,18 +319,25 @@ class PortalShortcut {
   void Advance();
   void Connect();
   void ConnectionReady(GDBusConnection* bus);
-  void PortalChecked(bool available);
+  void PortalAvailable();
+  // The portal couldn't be used. |missing|: it doesn't exist or offers no
+  // GlobalShortcuts, for good; otherwise the next Bind tries again.
+  void PortalFailed(bool missing);
+  // Drops the connection, and with it the session and anything in flight.
+  void Disconnect();
   void CreateSession();
   void SessionCreated(guint32 response, GVariant* results);
   void ShortcutsBound(guint32 response, GVariant* results);
   void BindDone(int status);
   void CloseSession();
+  void SessionEnded();
   void Resolve(int status);
 
   // Calls a portal method that answers through a Request object.
   void Request(const gchar* method, GVariant* parameters,
                const std::string& token, ResponseHandler handler);
   void WatchRequest(const std::string& path);
+  void Unsubscribe(guint* subscription);
   std::string NextToken();
 
   static void OnConnected(GObject* source, GAsyncResult* result, gpointer data);
@@ -300,11 +354,22 @@ class PortalShortcut {
                           const gchar* path, const gchar* interface,
                           const gchar* signal, GVariant* parameters,
                           gpointer data);
+  static void OnSessionClosed(GDBusConnection* bus, const gchar* sender,
+                              const gchar* path, const gchar* interface,
+                              const gchar* signal, GVariant* parameters,
+                              gpointer data);
+  static void OnPortalVanished(GDBusConnection* bus, const gchar* name,
+                               gpointer data);
+  static gboolean OnRebindTimer(gpointer data);
 
   GlobalHotKey::PressedCallback on_pressed_;
-  GCancellable* cancellable_;
+  // Per connection, cancelled with it: pending callbacks then leave this
+  // object alone.
+  GCancellable* cancellable_ = nullptr;
   GDBusConnection* bus_ = nullptr;
   Portal portal_ = Portal::kUnknown;
+  guint name_watch_ = 0;
+  guint rebind_timer_ = 0;
 
   // The trigger to bind, or empty for none.
   std::string wanted_;
@@ -323,6 +388,7 @@ class PortalShortcut {
   // The open session and the trigger bound in it.
   std::string session_;
   std::string bound_;
+  guint closed_subscription_ = 0;
   // The last trigger that couldn't be bound, and why.
   std::string failed_;
   int failed_status_ = kHotKeyOk;
@@ -332,22 +398,13 @@ class PortalShortcut {
 };
 
 PortalShortcut::PortalShortcut(GlobalHotKey::PressedCallback on_pressed)
-    : on_pressed_(std::move(on_pressed)), cancellable_(g_cancellable_new()) {}
+    : on_pressed_(std::move(on_pressed)) {}
 
 PortalShortcut::~PortalShortcut() {
-  // Pending callbacks see the cancellation and leave this object alone.
-  g_cancellable_cancel(cancellable_);
-  g_object_unref(cancellable_);
-  if (bus_ != nullptr) {
-    if (response_subscription_ != 0) {
-      g_dbus_connection_signal_unsubscribe(bus_, response_subscription_);
-    }
-    if (activated_subscription_ != 0) {
-      g_dbus_connection_signal_unsubscribe(bus_, activated_subscription_);
-    }
-    // Closing the connection ends the session and releases the shortcut.
-    g_object_unref(bus_);
+  if (rebind_timer_ != 0) {
+    g_source_remove(rebind_timer_);
   }
+  Disconnect();
 }
 
 void PortalShortcut::Bind(const std::string& trigger,
@@ -367,6 +424,12 @@ void PortalShortcut::Advance() {
   if (busy_) {
     return;  // Back here when the request in flight is done.
   }
+  if (wanted_.empty()) {
+    CloseSession();
+    // A Bind that was overtaken by Unbind: nothing went wrong.
+    Resolve(kHotKeyOk);
+    return;
+  }
   switch (portal_) {
     case Portal::kUnknown:
       Connect();
@@ -378,12 +441,6 @@ void PortalShortcut::Advance() {
       return;
     case Portal::kAvailable:
       break;
-  }
-  if (wanted_.empty()) {
-    CloseSession();
-    // A Bind that was overtaken by Unbind: nothing went wrong.
-    Resolve(kHotKeyOk);
-    return;
   }
   if (!session_.empty() && bound_ == wanted_) {
     Resolve(kHotKeyOk);
@@ -407,9 +464,10 @@ void PortalShortcut::Connect() {
       g_dbus_address_get_for_bus_sync(G_BUS_TYPE_SESSION, nullptr, &error);
   if (address == nullptr) {
     g_warning("No session bus for the shortcuts portal: %s", error->message);
-    PortalChecked(false);
+    PortalFailed(true);
     return;
   }
+  cancellable_ = g_cancellable_new();
   g_dbus_connection_new_for_address(
       address,
       static_cast<GDBusConnectionFlags>(
@@ -428,7 +486,7 @@ void PortalShortcut::OnConnected(GObject* source, GAsyncResult* result,
   auto* self = static_cast<PortalShortcut*>(data);
   if (bus == nullptr) {
     g_warning("Could not connect to the session bus: %s", error->message);
-    self->PortalChecked(false);
+    self->PortalFailed(false);
     return;
   }
   self->ConnectionReady(bus);
@@ -484,20 +542,84 @@ void PortalShortcut::OnVersion(GObject* source, GAsyncResult* result,
   if (g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
     return;
   }
+  auto* self = static_cast<PortalShortcut*>(data);
   if (reply == nullptr) {
     g_message("No global shortcuts portal: %s", error->message);
+    self->PortalFailed(IsMissingPortal(error));
+    return;
   }
-  static_cast<PortalShortcut*>(data)->PortalChecked(reply != nullptr);
+  self->PortalAvailable();
 }
 
-void PortalShortcut::PortalChecked(bool available) {
-  portal_ = available ? Portal::kAvailable : Portal::kUnavailable;
-  if (available) {
-    activated_subscription_ = g_dbus_connection_signal_subscribe(
-        bus_, kPortalBusName, kShortcutsInterface, "Activated", kPortalPath,
-        nullptr, G_DBUS_SIGNAL_FLAGS_NONE, OnActivated, this, nullptr);
-  }
+void PortalShortcut::PortalAvailable() {
+  portal_ = Portal::kAvailable;
+  activated_subscription_ = g_dbus_connection_signal_subscribe(
+      bus_, kPortalBusName, kShortcutsInterface, "Activated", kPortalPath,
+      nullptr, G_DBUS_SIGNAL_FLAGS_NONE, OnActivated, this, nullptr);
+  // If the portal quits or crashes, its sessions go with it.
+  name_watch_ = g_bus_watch_name_on_connection(
+      bus_, kPortalBusName, G_BUS_NAME_WATCHER_FLAGS_NONE, nullptr,
+      OnPortalVanished, this, nullptr);
   Advance();
+}
+
+void PortalShortcut::PortalFailed(bool missing) {
+  Disconnect();
+  if (missing) {
+    portal_ = Portal::kUnavailable;
+    Advance();
+  } else {
+    Resolve(wanted_.empty() ? kHotKeyOk : kHotKeyPortalFailed);
+  }
+}
+
+void PortalShortcut::Disconnect() {
+  if (cancellable_ != nullptr) {
+    g_cancellable_cancel(cancellable_);
+    g_clear_object(&cancellable_);
+  }
+  if (name_watch_ != 0) {
+    g_bus_unwatch_name(name_watch_);
+    name_watch_ = 0;
+  }
+  if (bus_ != nullptr) {
+    Unsubscribe(&response_subscription_);
+    Unsubscribe(&closed_subscription_);
+    Unsubscribe(&activated_subscription_);
+    // Closing the connection ends the session and releases the shortcut.
+    g_dbus_connection_close(bus_, nullptr, nullptr, nullptr);
+    g_clear_object(&bus_);
+  }
+  portal_ = Portal::kUnknown;
+  busy_ = false;
+  binding_.clear();
+  session_.clear();
+  bound_.clear();
+}
+
+void PortalShortcut::OnPortalVanished(GDBusConnection* bus, const gchar* name,
+                                      gpointer data) {
+  auto* self = static_cast<PortalShortcut*>(data);
+  g_message("The desktop portal went away; binding the shortcut again");
+  const bool was_busy = self->busy_;
+  self->Disconnect();
+  if (was_busy) {
+    self->Resolve(kHotKeyPortalFailed);
+  }
+  if (self->rebind_timer_ == 0) {
+    self->rebind_timer_ =
+        g_timeout_add_seconds(kRebindDelaySeconds, OnRebindTimer, self);
+  }
+}
+
+gboolean PortalShortcut::OnRebindTimer(gpointer data) {
+  auto* self = static_cast<PortalShortcut*>(data);
+  self->rebind_timer_ = 0;
+  if (!self->wanted_.empty() && self->portal_ == Portal::kUnknown) {
+    self->retry_ = true;
+    self->Advance();
+  }
+  return G_SOURCE_REMOVE;
 }
 
 std::string PortalShortcut::NextToken() {
@@ -525,6 +647,11 @@ void PortalShortcut::SessionCreated(guint32 response, GVariant* results) {
     return;
   }
   session_ = handle;
+  // The desktop can end the session (shortcut permission revoked, backend
+  // restarted).
+  closed_subscription_ = g_dbus_connection_signal_subscribe(
+      bus_, kPortalBusName, kSessionInterface, "Closed", session_.c_str(),
+      nullptr, G_DBUS_SIGNAL_FLAGS_NONE, OnSessionClosed, this, nullptr);
 
   GVariantBuilder shortcuts;
   g_variant_builder_init(&shortcuts, G_VARIANT_TYPE("a(sa{sv})"));
@@ -593,6 +720,7 @@ void PortalShortcut::CloseSession() {
   if (session_.empty()) {
     return;
   }
+  Unsubscribe(&closed_subscription_);
   g_dbus_connection_call(bus_, kPortalBusName, session_.c_str(),
                          kSessionInterface, "Close", nullptr, nullptr,
                          G_DBUS_CALL_FLAGS_NONE, -1, nullptr, nullptr, nullptr);
@@ -600,11 +728,40 @@ void PortalShortcut::CloseSession() {
   bound_.clear();
 }
 
+void PortalShortcut::OnSessionClosed(GDBusConnection* bus, const gchar* sender,
+                                     const gchar* path, const gchar* interface,
+                                     const gchar* signal, GVariant* parameters,
+                                     gpointer data) {
+  auto* self = static_cast<PortalShortcut*>(data);
+  if (!self->session_.empty() && self->session_ == path) {
+    self->SessionEnded();
+  }
+}
+
+void PortalShortcut::SessionEnded() {
+  g_message("The desktop closed the shortcut session");
+  Unsubscribe(&closed_subscription_);
+  session_.clear();
+  bound_.clear();
+  if (busy_) {
+    // Closed before BindShortcuts answered.
+    Unsubscribe(&response_subscription_);
+    BindDone(kHotKeyPortalFailed);
+  }
+}
+
 void PortalShortcut::Resolve(int status) {
   std::vector<GlobalHotKey::DoneCallback> waiters;
   waiters.swap(waiters_);
   for (auto& done : waiters) {
     done(status);
+  }
+}
+
+void PortalShortcut::Unsubscribe(guint* subscription) {
+  if (*subscription != 0) {
+    g_dbus_connection_signal_unsubscribe(bus_, *subscription);
+    *subscription = 0;
   }
 }
 
@@ -628,10 +785,10 @@ void PortalShortcut::Request(const gchar* method, GVariant* parameters,
 }
 
 void PortalShortcut::WatchRequest(const std::string& path) {
-  if (response_subscription_ != 0) {
-    g_dbus_connection_signal_unsubscribe(bus_, response_subscription_);
-  }
+  Unsubscribe(&response_subscription_);
   request_path_ = path;
+  // xdg-desktop-portal sends Response to the caller only, so no match rule
+  // is needed (like GTK and libportal).
   response_subscription_ = g_dbus_connection_signal_subscribe(
       bus_, kPortalBusName, kRequestInterface, "Response", path.c_str(),
       nullptr, G_DBUS_SIGNAL_FLAGS_NO_MATCH_RULE, OnResponse, this, nullptr);
@@ -648,9 +805,7 @@ void PortalShortcut::OnRequestSent(GObject* source, GAsyncResult* result,
   auto* self = static_cast<PortalShortcut*>(data);
   if (reply == nullptr) {
     g_warning("Global shortcuts portal: %s", error->message);
-    g_dbus_connection_signal_unsubscribe(self->bus_,
-                                         self->response_subscription_);
-    self->response_subscription_ = 0;
+    self->Unsubscribe(&self->response_subscription_);
     self->BindDone(kHotKeyPortalFailed);
     return;
   }
@@ -671,8 +826,7 @@ void PortalShortcut::OnResponse(GDBusConnection* bus, const gchar* sender,
       !g_variant_is_of_type(parameters, G_VARIANT_TYPE("(ua{sv})"))) {
     return;
   }
-  g_dbus_connection_signal_unsubscribe(bus, self->response_subscription_);
-  self->response_subscription_ = 0;
+  self->Unsubscribe(&self->response_subscription_);
   guint32 response = 2;
   g_autoptr(GVariant) results = nullptr;
   g_variant_get(parameters, "(u@a{sv})", &response, &results);
