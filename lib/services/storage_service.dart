@@ -68,16 +68,28 @@ class HivePasteStore implements PasteStore {
   List<PasteItem> getAll() =>
       _box.values.toList()..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
-  @override
-  Future<void> put(PasteItem item) => _box.put(item.id, item);
+  // Hive only ever appends to the file: deleting an item adds a "deleted"
+  // marker and editing one adds a new copy, while the old record stays on disk
+  // (encrypted) until the file is compacted, which Hive by itself does only
+  // after 60 deletions. Compacting right away means a deleted or edited
+  // password really is gone from the disk.
 
   @override
-  Future<void> delete(String id) => _box.delete(id);
+  Future<void> put(PasteItem item) async {
+    final replacing = _box.containsKey(item.id);
+    await _box.put(item.id, item);
+    if (replacing) await _box.compact();
+  }
+
+  @override
+  Future<void> delete(String id) async {
+    await _box.delete(id);
+    await _box.compact();
+  }
 
   @override
   Future<void> clear() async {
     await _box.clear();
-    // Drop the old (encrypted) records from the file right away.
     await _box.compact();
   }
 }
@@ -235,6 +247,10 @@ class Storage {
 
     var migrated = 0;
     if (legacyDir != null) migrated = await _migrateLegacy(box, legacyDir);
+
+    // Pastee 1.1.0 didn't compact after deleting or editing, so its file can
+    // still hold old records. This does nothing when there are none.
+    await box.compact();
 
     final settings = await Hive.openBox<dynamic>(settingsBox);
     return OpenedStorage(
