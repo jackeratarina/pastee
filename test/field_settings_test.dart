@@ -356,6 +356,40 @@ void main() {
       await tester.pump(const Duration(seconds: 2));
     }, variant: both);
 
+    testWidgets('a secret phrase of your own is copied as a secret',
+        (tester) async {
+      final locker = configWith([
+        rule('Locker', phrases: ['locker'], secret: true),
+      ]);
+      final clipboard = FakeClipboard()
+        ..clearsSecretsAfter = const Duration(seconds: 30);
+      final app = TestApp(
+        clipboard: clipboard,
+        items: [makeItem('Gym\nLocker K7Q9X', id: 'g')],
+        settings: {'fields': locker.encode()},
+      );
+      await app.pump(tester);
+      expect(find.textContaining('K7Q9X'), findsNothing,
+          reason: 'masked by the secret rule');
+
+      // The field itself (detected fields come before plain lines)…
+      expect(customField(run('Gym\nLocker K7Q9X', locker), 'Locker')?.number,
+          1);
+      await pressShortcut(tester, LogicalKeyboardKey.digit1);
+      expect(clipboard.text, 'K7Q9X');
+      expect(clipboard.lastSecret, isTrue);
+      await tester.pump(const Duration(seconds: 2));
+
+      // …and the whole note, whose only secret comes from your rule.
+      await pressShortcut(tester, LogicalKeyboardKey.keyC);
+      expect(clipboard.text, 'Gym\nLocker K7Q9X');
+      expect(clipboard.lastSecret, isTrue);
+      // The previous message animates out first.
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.text('Copied to clipboard · clears in 30 s'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 5));
+    }, variant: both);
+
     testWidgets('a number nothing has says so', (tester) async {
       final app = TestApp(
         items: [makeItem('Seat: 12A', id: 's')],
