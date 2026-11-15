@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
 import '../model/app_settings.dart';
+import '../model/field_config.dart';
 import '../model/hotkey.dart';
 import '../model/paste_item.dart';
 import '../services/app_lock.dart';
@@ -16,6 +17,7 @@ import '../services/field_extractor.dart';
 import '../services/passcode.dart';
 import '../services/paste_titles.dart';
 import '../services/storage_service.dart';
+import 'field_config_provider.dart';
 
 // ── services (overridden in main.dart and in tests) ───────────────────────
 
@@ -267,7 +269,8 @@ final searchQueryProvider = StateProvider<String>((ref) => '');
 
 final pasteListProvider =
     StateNotifierProvider<PasteListNotifier, List<PasteItem>>((ref) {
-  return PasteListNotifier(ref.watch(pasteStoreProvider));
+  return PasteListNotifier(ref.watch(pasteStoreProvider),
+      fieldConfig: () => ref.read(fieldConfigProvider));
 });
 
 final filteredPasteListProvider = Provider<List<PasteItem>>((ref) {
@@ -289,9 +292,14 @@ final filteredPasteListProvider = Provider<List<PasteItem>>((ref) {
 });
 
 class PasteListNotifier extends StateNotifier<List<PasteItem>> {
-  PasteListNotifier(this._store) : super(_store.getAll());
+  PasteListNotifier(this._store, {FieldConfig Function()? fieldConfig})
+      : _fieldConfig = fieldConfig ?? (() => FieldConfig.defaults),
+        super(_store.getAll());
 
   final PasteStore _store;
+
+  /// The current Fields & numbers settings, for titles and known secrets.
+  final FieldConfig Function() _fieldConfig;
   static const _uuid = Uuid();
   static const _maxUndo = 20;
 
@@ -319,7 +327,7 @@ class PasteListNotifier extends StateNotifier<List<PasteItem>> {
     try {
       final item = PasteItem(
         id: _uuid.v4(),
-        title: autoTitle(text),
+        title: autoTitle(text, config: _fieldConfig()),
         content: text,
         createdAt: DateTime.now(),
         sensitive: _isKnownSecret(text),
@@ -337,8 +345,11 @@ class PasteListNotifier extends StateNotifier<List<PasteItem>> {
   bool _isKnownSecret(String text) {
     final value = text.trim();
     if (value.isEmpty) return false;
+    final config = _fieldConfig();
     for (final item in state) {
-      if (FieldExtractor.extract(item.content).secretValues.contains(value)) {
+      if (FieldExtractor.extract(item.content, config: config)
+          .secretValues
+          .contains(value)) {
         return true;
       }
     }
