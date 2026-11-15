@@ -3,6 +3,7 @@
 #include <flutter/standard_method_codec.h>
 #include <flutter_windows.h>
 
+#include <cstring>
 #include <optional>
 #include <string>
 #include <variant>
@@ -23,23 +24,92 @@ constexpr UINT_PTR kHideFallbackTimerId = 1;
 constexpr int kMinWidth = 420;
 constexpr int kMinHeight = 440;
 
-std::optional<int64_t> GetIntArgument(const flutter::EncodableValue* arguments,
-                                      const char* key) {
+const flutter::EncodableValue* GetArgument(
+    const flutter::EncodableValue* arguments, const char* key) {
   const auto* map = std::get_if<flutter::EncodableMap>(arguments);
   if (map == nullptr) {
-    return std::nullopt;
+    return nullptr;
   }
   auto it = map->find(flutter::EncodableValue(key));
-  if (it == map->end()) {
+  return it == map->end() ? nullptr : &it->second;
+}
+
+std::optional<int64_t> GetIntArgument(const flutter::EncodableValue* arguments,
+                                      const char* key) {
+  const auto* value = GetArgument(arguments, key);
+  if (value == nullptr) {
     return std::nullopt;
   }
-  if (const auto* value = std::get_if<int32_t>(&it->second)) {
-    return *value;
+  if (const auto* number = std::get_if<int32_t>(value)) {
+    return *number;
   }
-  if (const auto* value = std::get_if<int64_t>(&it->second)) {
-    return *value;
+  if (const auto* number = std::get_if<int64_t>(value)) {
+    return *number;
   }
   return std::nullopt;
+}
+
+const std::string* GetStringArgument(const flutter::EncodableValue* arguments,
+                                     const char* key) {
+  const auto* value = GetArgument(arguments, key);
+  return value == nullptr ? nullptr : std::get_if<std::string>(value);
+}
+
+bool GetBoolArgument(const flutter::EncodableValue* arguments,
+                     const char* key) {
+  const auto* value = GetArgument(arguments, key);
+  const bool* flag = value == nullptr ? nullptr : std::get_if<bool>(value);
+  return flag != nullptr && *flag;
+}
+
+std::wstring Utf16FromUtf8(const std::string& utf8) {
+  if (utf8.empty()) {
+    return std::wstring();
+  }
+  const int size = static_cast<int>(utf8.size());
+  const int length =
+      ::MultiByteToWideChar(CP_UTF8, 0, utf8.data(), size, nullptr, 0);
+  if (length <= 0) {
+    return std::wstring();
+  }
+  std::wstring utf16(static_cast<size_t>(length), L'\0');
+  ::MultiByteToWideChar(CP_UTF8, 0, utf8.data(), size, utf16.data(), length);
+  return utf16;
+}
+
+// Another app (often a clipboard viewer reacting to the last change) can hold
+// the clipboard open for a moment, so retry briefly before giving up.
+bool OpenClipboardWithRetry(HWND window) {
+  for (int attempt = 0; attempt < 10; ++attempt) {
+    if (::OpenClipboard(window)) {
+      return true;
+    }
+    ::Sleep(10);
+  }
+  return false;
+}
+
+// Puts a copy of |size| bytes on the (open) clipboard in |format|.
+bool SetClipboardBytes(UINT format, const void* data, size_t size) {
+  if (format == 0) {
+    return false;
+  }
+  HGLOBAL memory = ::GlobalAlloc(GMEM_MOVEABLE, size);
+  if (memory == nullptr) {
+    return false;
+  }
+  void* target = ::GlobalLock(memory);
+  if (target == nullptr) {
+    ::GlobalFree(memory);
+    return false;
+  }
+  std::memcpy(target, data, size);
+  ::GlobalUnlock(memory);
+  if (::SetClipboardData(format, memory) == nullptr) {
+    ::GlobalFree(memory);
+    return false;
+  }
+  return true;  // The clipboard owns |memory| now.
 }
 
 }  // namespace
@@ -133,9 +203,79 @@ void FlutterWindow::HandleNativeCall(
     result->Success();
   } else if (method == "isWindowActive") {
     result->Success(flutter::EncodableValue(IsWindowActive()));
+  } else if (method == "writeClipboard") {
+    const std::string* text = GetStringArgument(call.arguments(), "text");
+    if (text == nullptr) {
+      result->Error("bad_args", "text is required");
+      return;
+    }
+    const bool concealed = GetBoolArgument(call.arguments(), "concealed");
+    const bool clear_on_exit =
+        GetBoolArgument(call.arguments(), "clearOnExit");
+    const std::optional<DWORD> sequence = WriteClipboard(*text, concealed);
+    if (!sequence) {
+      result->Error("clipboard_busy", "The clipboard is in use by another app.");
+      return;
+    }
+    clear_on_exit_sequence_ =
+        concealed && clear_on_exit ? sequence : std::nullopt;
+    result->Success(flutter::EncodableValue(static_cast<int64_t>(*sequence)));
+  } else if (method == "clearClipboard") {
+    const auto sequence = GetIntArgument(call.arguments(), "changeCount");
+    if (!sequence) {
+      result->Error("bad_args", "changeCount is required");
+      return;
+    }
+    result->Success(flutter::EncodableValue(
+        ClearClipboardIfUnchanged(static_cast<DWORD>(*sequence))));
   } else {
     result->NotImplemented();
   }
+}
+
+std::optional<DWORD> FlutterWindow::WriteClipboard(const std::string& text,
+                                                   bool concealed) {
+  HWND hwnd = GetHandle();
+  if (hwnd == nullptr || !OpenClipboardWithRetry(hwnd)) {
+    return std::nullopt;
+  }
+  const std::wstring utf16 = Utf16FromUtf8(text);
+  const bool written =
+      ::EmptyClipboard() &&
+      SetClipboardBytes(CF_UNICODETEXT, utf16.c_str(),
+                        (utf16.size() + 1) * sizeof(wchar_t));
+  if (written && concealed) {
+    // Keeps the text out of clipboard history (Win+V) and cloud clipboard
+    // sync. The broader "ignore this" formats some password managers add are
+    // left out on purpose: remote desktop and VM tools may then refuse to
+    // paste it.
+    const DWORD no = 0;
+    SetClipboardBytes(::RegisterClipboardFormatW(L"CanIncludeInClipboardHistory"),
+                      &no, sizeof(no));
+    SetClipboardBytes(::RegisterClipboardFormatW(L"CanUploadToCloudClipboard"),
+                      &no, sizeof(no));
+  }
+  ::CloseClipboard();
+  if (!written) {
+    return std::nullopt;
+  }
+  return ::GetClipboardSequenceNumber();
+}
+
+bool FlutterWindow::ClearClipboardIfUnchanged(DWORD sequence) {
+  if (clear_on_exit_sequence_ == sequence) {
+    clear_on_exit_sequence_.reset();
+  }
+  HWND hwnd = GetHandle();
+  if (hwnd == nullptr || ::GetClipboardSequenceNumber() != sequence ||
+      !OpenClipboardWithRetry(hwnd)) {
+    return false;
+  }
+  // Checked again while the clipboard is open, so nothing can slip in.
+  const bool cleared =
+      ::GetClipboardSequenceNumber() == sequence && ::EmptyClipboard();
+  ::CloseClipboard();
+  return cleared;
 }
 
 void FlutterWindow::UnregisterSummonHotKey() {
@@ -219,6 +359,10 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       // is still valid.
       UnregisterSummonHotKey();
       CancelHideFallback();
+      // A copied secret doesn't outlive Pastee if nothing replaced it.
+      if (clear_on_exit_sequence_) {
+        ClearClipboardIfUnchanged(*clear_on_exit_sequence_);
+      }
       break;
     case WM_HOTKEY:
       if (static_cast<int>(wparam) == kSummonHotKeyId) {

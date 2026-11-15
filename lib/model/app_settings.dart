@@ -9,7 +9,19 @@ class AppSettings {
     this.summonHotKey,
     this.hideAfterCopy = true,
     this.maskSecrets = true,
+    this.clearSecretsAfter = defaultClearSecretsAfter,
   });
+
+  static const defaultClearSecretsAfter = Duration(seconds: 30);
+
+  /// The choices Settings offers for [clearSecretsAfter], besides "Never".
+  static const clearSecretsChoices = [
+    Duration(seconds: 10),
+    Duration(seconds: 30),
+    Duration(minutes: 1),
+    Duration(minutes: 2),
+    Duration(minutes: 5),
+  ];
 
   final ThemeMode themeMode;
 
@@ -23,17 +35,25 @@ class AppSettings {
   /// Show detected passwords, tokens, card numbers and codes as dots.
   final bool maskSecrets;
 
+  /// How long a copied secret stays on the clipboard before Pastee clears it;
+  /// null means it stays until something else is copied.
+  final Duration? clearSecretsAfter;
+
   AppSettings copyWith({
     ThemeMode? themeMode,
     HotKeySpec? Function()? summonHotKey,
     bool? hideAfterCopy,
     bool? maskSecrets,
+    Duration? Function()? clearSecretsAfter,
   }) {
     return AppSettings(
       themeMode: themeMode ?? this.themeMode,
       summonHotKey: summonHotKey != null ? summonHotKey() : this.summonHotKey,
       hideAfterCopy: hideAfterCopy ?? this.hideAfterCopy,
       maskSecrets: maskSecrets ?? this.maskSecrets,
+      clearSecretsAfter: clearSecretsAfter != null
+          ? clearSecretsAfter()
+          : this.clearSecretsAfter,
     );
   }
 }

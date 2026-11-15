@@ -3,10 +3,11 @@ import Cocoa
 import FlutterMacOS
 
 /// Hosts Flutter plus Pastee's small native bridge (channel "pastee/native"):
-/// a system-wide summon shortcut, and showing/hiding the app.
+/// a system-wide summon shortcut, showing/hiding the app, and copying secrets.
 class MainFlutterWindow: NSWindow {
   private var nativeChannel: FlutterMethodChannel?
   private let summonHotKey = GlobalHotKey()
+  private let secretClipboard = SecretClipboard()
 
   /// How long a shortcut hide waits for Dart to call hideWindow before hiding
   /// anyway.
@@ -134,9 +135,83 @@ class MainFlutterWindow: NSWindow {
       result(nil)
     case "isWindowActive":
       result(isFrontmost)
+    case "writeClipboard":
+      guard let args = call.arguments as? [String: Any], let text = args["text"] as? String
+      else {
+        result(FlutterError(code: "bad_args", message: "text is required", details: nil))
+        return
+      }
+      let concealed = args["concealed"] as? Bool ?? false
+      let clearOnExit = args["clearOnExit"] as? Bool ?? false
+      result(secretClipboard.write(text, concealed: concealed, clearOnExit: clearOnExit))
+    case "clearClipboard":
+      guard let args = call.arguments as? [String: Any],
+        let changeCount = args["changeCount"] as? Int
+      else {
+        result(FlutterError(code: "bad_args", message: "changeCount is required", details: nil))
+        return
+      }
+      result(secretClipboard.clear(ifChangeCount: changeCount))
     default:
       result(FlutterMethodNotImplemented)
     }
+  }
+}
+
+/// Copies text the way password managers do, and clears it again on request.
+final class SecretClipboard {
+  /// The nspasteboard.org marker that clipboard managers (Maccy, Paste,
+  /// Raycast, Alfred, …) treat as "a password: don't record or show it".
+  private static let concealedType = NSPasteboard.PasteboardType(
+    "org.nspasteboard.ConcealedType")
+
+  /// The change count of a secret to clear when Pastee quits, if the
+  /// clipboard still holds it then.
+  private var clearOnExitChangeCount: Int?
+  private var terminateObserver: NSObjectProtocol?
+
+  init() {
+    terminateObserver = NotificationCenter.default.addObserver(
+      forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      guard let self = self, let changeCount = self.clearOnExitChangeCount else { return }
+      _ = self.clear(ifChangeCount: changeCount)
+    }
+  }
+
+  deinit {
+    if let observer = terminateObserver {
+      NotificationCenter.default.removeObserver(observer)
+    }
+  }
+
+  /// Returns the pasteboard's change count after writing.
+  func write(_ text: String, concealed: Bool, clearOnExit: Bool) -> Int {
+    let pasteboard = NSPasteboard.general
+    if concealed {
+      // currentHostOnly keeps it off Universal Clipboard, so it isn't sent
+      // to the user's other Apple devices.
+      _ = pasteboard.prepareForNewContents(with: .currentHostOnly)
+      _ = pasteboard.setString(text, forType: .string)
+      _ = pasteboard.setData(Data(), forType: SecretClipboard.concealedType)
+    } else {
+      _ = pasteboard.clearContents()
+      _ = pasteboard.setString(text, forType: .string)
+    }
+    let changeCount = pasteboard.changeCount
+    clearOnExitChangeCount = concealed && clearOnExit ? changeCount : nil
+    return changeCount
+  }
+
+  /// Empties the pasteboard only if nothing was copied since [changeCount].
+  func clear(ifChangeCount changeCount: Int) -> Bool {
+    if clearOnExitChangeCount == changeCount {
+      clearOnExitChangeCount = nil
+    }
+    let pasteboard = NSPasteboard.general
+    guard pasteboard.changeCount == changeCount else { return false }
+    _ = pasteboard.clearContents()
+    return true
   }
 }
 
