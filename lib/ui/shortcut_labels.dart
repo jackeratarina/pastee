@@ -1,8 +1,22 @@
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 
 bool get isMacPlatform => defaultTargetPlatform == TargetPlatform.macOS;
+bool get isLinuxPlatform => defaultTargetPlatform == TargetPlatform.linux;
 
-/// "⌘C" on macOS, "Ctrl+C" on Windows.
+/// The command a desktop keyboard shortcut can run to show or hide Pastee on
+/// Linux: `pastee --toggle` when installed from the .deb, otherwise with the
+/// path of this copy (the tarball can live anywhere).
+String linuxToggleCommand() {
+  final executable = Platform.resolvedExecutable;
+  if (executable == '/opt/pastee/pastee') return 'pastee --toggle';
+  return executable.contains(' ')
+      ? '"$executable" --toggle'
+      : '$executable --toggle';
+}
+
+/// "⌘C" on macOS, "Ctrl+C" on Windows and Linux.
 String primaryShortcut(String key) => isMacPlatform ? '⌘$key' : 'Ctrl+$key';
 
 /// The in-app keyboard shortcuts, for the hint bar and the settings list.

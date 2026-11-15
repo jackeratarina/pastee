@@ -15,11 +15,11 @@ class HotKeyResult {
   bool get ok => error == null;
 }
 
-/// The small native layer in macos/Runner/MainFlutterWindow.swift and
-/// windows/runner/flutter_window.cpp: one global summon shortcut, plus showing
-/// and hiding the window.
+/// The small native layer in macos/Runner/MainFlutterWindow.swift,
+/// windows/runner/flutter_window.cpp and linux/runner/native_bridge.cc: one
+/// global summon shortcut, plus showing and hiding the window.
 abstract class DesktopBridge {
-  /// False where the native side doesn't exist (tests, Linux dev builds).
+  /// False where the native side doesn't exist (tests, web).
   bool get isSupported;
 
   /// Fires when the summon shortcut is pressed. true: the native side has
@@ -35,7 +35,7 @@ abstract class DesktopBridge {
   Future<void> showWindow();
 
   /// Hides Pastee and returns focus to the app you were in (macOS hides the
-  /// app; Windows minimizes the window).
+  /// app; Windows and Linux minimize the window).
   Future<void> hideWindow();
 
   /// Puts [text] on the clipboard and returns the clipboard's change number
@@ -69,7 +69,8 @@ class MethodChannelDesktopBridge implements DesktopBridge {
   bool get isSupported =>
       !kIsWeb &&
       (defaultTargetPlatform == TargetPlatform.macOS ||
-          defaultTargetPlatform == TargetPlatform.windows);
+          defaultTargetPlatform == TargetPlatform.windows ||
+          defaultTargetPlatform == TargetPlatform.linux);
 
   @override
   Stream<bool> get summonEvents => _summons.stream;
@@ -105,6 +106,9 @@ class MethodChannelDesktopBridge implements DesktopBridge {
   }
 
   String _describe(int status, HotKeySpec spec) {
+    if (defaultTargetPlatform == TargetPlatform.linux) {
+      return _describeLinux(status, spec);
+    }
     const macTaken = -9878; // eventHotKeyExistsErr
     const macInvalid = -9879; // eventHotKeyInvalidErr
     const windowsTaken = 1409; // ERROR_HOTKEY_ALREADY_REGISTERED
@@ -113,6 +117,29 @@ class MethodChannelDesktopBridge implements DesktopBridge {
     }
     if (status == macInvalid) {
       return '${spec.display} can\'t be used as a shortcut.';
+    }
+    return 'The system refused ${spec.display} (error $status).';
+  }
+
+  /// The results of linux/runner/global_hotkey.h: an X11 error from the key
+  /// grab (positive), or one of Pastee's own codes (negative).
+  String _describeLinux(int status, HotKeySpec spec) {
+    const taken = 10; // X11 BadAccess: another app grabbed it
+    const unavailable = -2; // Wayland without the GlobalShortcuts portal
+    const noSuchKey = -3; // not on the current keyboard layout
+    const declined = -4; // the desktop's shortcut dialog was dismissed
+    const portalFailed = -5;
+    switch (status) {
+      case taken:
+        return 'Another app is already using ${spec.display}. Pick a different shortcut.';
+      case unavailable:
+        return 'Your desktop doesn\'t let apps set a global shortcut.';
+      case noSuchKey:
+        return '${spec.display} isn\'t on your keyboard layout.';
+      case declined:
+        return 'Your desktop didn\'t give Pastee a shortcut. Allow it when asked, or set one in your system\'s keyboard settings.';
+      case portalFailed:
+        return 'Your desktop couldn\'t set up the shortcut.';
     }
     return 'The system refused ${spec.display} (error $status).';
   }

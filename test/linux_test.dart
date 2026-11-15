@@ -1,7 +1,14 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pastee/model/hotkey.dart';
+import 'package:pastee/providers/providers.dart';
+import 'package:pastee/services/desktop_bridge.dart';
+
+import 'support/fakes.dart';
+
+final linux = TargetPlatformVariant.only(TargetPlatform.linux);
 
 void onLinux(void Function() body) {
   debugDefaultTargetPlatformOverride = TargetPlatform.linux;
@@ -99,4 +106,96 @@ void main() {
       });
     });
   });
+
+  group('Linux desktop bridge', () {
+    const channel = MethodChannel('pastee/native');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    const spec = HotKeySpec(
+        keyLabel: 'V',
+        keyCode: 0x76,
+        modifiers: {KeyModifier.control, KeyModifier.alt});
+
+    tearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+    Future<HotKeyResult> registerAnswering(int status) async {
+      final calls = <MethodCall>[];
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call);
+        return status;
+      });
+      debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+      try {
+        final bridge = MethodChannelDesktopBridge(channel: channel);
+        expect(bridge.isSupported, isTrue);
+        final result = await bridge.registerHotKey(spec);
+        expect(calls.single.arguments, {'keyCode': 0x76, 'modifiers': 0x0c});
+        return result;
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    }
+
+    test('describes the Linux results', () async {
+      expect((await registerAnswering(0)).ok, isTrue);
+      expect((await registerAnswering(10)).error,
+          'Another app is already using Ctrl+Alt+V. Pick a different shortcut.');
+      expect((await registerAnswering(-2)).error,
+          contains("doesn't let apps set a global shortcut"));
+      expect((await registerAnswering(-3)).error, contains('keyboard layout'));
+      expect(
+          (await registerAnswering(-4)).error, contains('keyboard settings'));
+      expect((await registerAnswering(-5)).error, contains('couldn'));
+      expect((await registerAnswering(2)).error, contains('(error 2)'));
+    });
+  });
+
+  testWidgets('Settings suggests pastee --toggle when the shortcut fails',
+      (tester) async {
+    final app = TestApp(
+        bridge: FakeBridge(
+            failWith: 'Your desktop doesn\'t let apps set a global shortcut.'));
+    await app.pump(tester);
+    await pressShortcut(tester, LogicalKeyboardKey.comma);
+    await tester.pumpAndSettle();
+    final dialog = find.byType(Dialog);
+    expect(
+        find.descendant(
+            of: dialog,
+            matching: find
+                .text('Your desktop doesn\'t let apps set a global shortcut.')),
+        findsOneWidget);
+    expect(
+        find.descendant(
+            of: dialog,
+            matching: find.textContaining('--toggle', findRichText: true)),
+        findsOneWidget);
+    // No Touch ID / Windows Hello on Linux, and no mention of it.
+    expect(find.textContaining('Touch ID'), findsNothing);
+  }, variant: linux);
+
+  testWidgets('Settings records shortcuts as X keysyms and masks',
+      (tester) async {
+    final app = TestApp();
+    await app.pump(tester);
+    await pressShortcut(tester, LogicalKeyboardKey.comma);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('--toggle', findRichText: true), findsNothing,
+        reason: 'the shortcut works, so no hint');
+
+    await tester.tap(find.text('Record'));
+    await tester.pump();
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyB);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pumpAndSettle();
+
+    final custom = app.container.read(settingsProvider).summonHotKey!;
+    expect(custom.display, 'Ctrl+Alt+B');
+    expect(custom.keyCode, 0x62); // XK_b
+    expect(custom.nativeModifiers, 0x04 | 0x08);
+    expect(app.bridge.registered.last, custom);
+  }, variant: linux);
 }
