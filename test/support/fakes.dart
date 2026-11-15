@@ -80,7 +80,8 @@ class FakeBridge implements DesktopBridge {
   }
 
   /// A pretend system clipboard with a change number, like NSPasteboard's
-  /// changeCount or Windows' clipboard sequence number.
+  /// changeCount, Windows' clipboard sequence number or the Linux runner's
+  /// own counter.
   String? clipboardText;
   int changeCount = 0;
   bool lastWriteConcealed = false;
@@ -206,7 +207,7 @@ class TestApp {
 }
 
 /// Presses [key] with the platform's primary modifier (⌘ on macOS, Ctrl on
-/// Windows) held down.
+/// Windows and Linux) held down.
 Future<void> pressShortcut(WidgetTester tester, LogicalKeyboardKey key) async {
   final modifier = defaultTargetPlatform == TargetPlatform.macOS
       ? LogicalKeyboardKey.metaLeft
