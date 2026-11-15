@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.1 — 2026-11-15
+
+### Privacy
+- **Copied secrets clear themselves.** When you copy a password, code or key, or anything from an item you set to always hide, Pastee empties the clipboard after 30 seconds unless you've copied something else since. The "Copied" message says when. Choose 10 seconds to 5 minutes, or Never, in Settings → Privacy. Quitting Pastee clears a secret that's still on the clipboard.
+- **Copied secrets stay out of clipboard history.** On Windows they're left out of clipboard history (**Win+V**) and cloud clipboard sync. On macOS they're marked the way password managers mark passwords, so clipboard managers that follow that convention skip them, and Universal Clipboard doesn't send them to your other Apple devices.
+- **Deleted items leave the disk right away.** The storage file kept an encrypted copy of deleted and edited items until 60 more deletions had piled up. Pastee now rewrites the file whenever you delete or edit an item, and tidies up what 1.1.0 left behind the first time it starts.
+
 ## 1.1.0 — 2026-11-14
 
 ### New
