@@ -21,6 +21,9 @@ migration:
     - platform: windows
       create_revision: ba393198430278b6595976de84fe170f553cc728
       base_revision: ba393198430278b6595976de84fe170f553cc728
+    - platform: linux
+      create_revision: c197ca5199e9ee5661e865596c9c07294dfab51c
+      base_revision: c197ca5199e9ee5661e865596c9c07294dfab51c
 
   # User provided section
 
