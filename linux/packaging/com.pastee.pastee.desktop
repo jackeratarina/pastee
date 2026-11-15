@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Name=Pastee
+GenericName=Clipboard Notes
+Comment=Paste once, then copy any password, link or code with one key
+Exec=pastee
+Icon=com.pastee.pastee
+Terminal=false
+Categories=Utility;
+Keywords=clipboard;notes;paste;password;snippets;
+StartupNotify=true
+StartupWMClass=com.pastee.pastee
+X-GNOME-SingleWindow=true
+Actions=toggle;
+
+[Desktop Action toggle]
+Name=Show or Hide Pastee
+Exec=pastee --toggle

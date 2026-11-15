@@ -1,7 +1,8 @@
 name: Build
 
-# Every push and pull request: analyze, test, and build the macOS and Windows
-# apps. Pushing a tag like v1.1.0 also publishes them as a GitHub release.
+# Every push and pull request: analyze, test, and build the macOS, Windows and
+# Linux apps. Pushing a tag like v1.1.0 also publishes them as a GitHub
+# release.
 on:
   push:
     branches: [main]
@@ -161,10 +162,74 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
+  linux:
+    name: Linux app (${{ matrix.arch }})
+    needs: test
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04 keeps the glibc baseline low: the package needs 2.34+
+          # (Ubuntu 22.04, Debian 12, Fedora 35 and later).
+          - arch: x64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    env:
+      VERSION: ${{ needs.test.outputs.version }}
+      BUNDLE: build/linux/${{ matrix.arch }}/release/bundle
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the build and test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake ninja-build pkg-config libgtk-3-dev libstdc++-12-dev \
+            libgl1-mesa-dri xvfb xauth xdotool dbus dpkg-dev
+      - uses: subosito/flutter-action@v2
+        if: matrix.arch == 'x64'
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      # Flutter publishes no Linux arm64 SDK archive, but the release tag
+      # builds there: the tool fetches the arm64 Dart SDK and engine itself.
+      - name: Set up Flutter from git (arm64)
+        if: matrix.arch == 'arm64'
+        run: |
+          git clone --depth 1 --branch "$FLUTTER_VERSION" https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+      - run: flutter --version
+      - run: flutter pub get
+      - name: Build
+        run: >
+          flutter build linux --release
+          --build-name "$VERSION" --build-number "$GITHUB_RUN_NUMBER"
+          --dart-define=PASTEE_VERSION="$VERSION"
+      # Starts and stays up, registers and receives the X11 shortcut, and a
+      # second `pastee --toggle` reaches it over D-Bus.
+      - name: Smoke test
+        run: >
+          dbus-run-session -- xvfb-run -a -s "-screen 0 1280x900x24"
+          linux/packaging/smoke-test.sh "$BUNDLE"
+      - name: Package
+        run: |
+          linux/packaging/build-packages.sh "$BUNDLE" "$VERSION" "${{ matrix.arch }}" dist
+          dpkg-deb --info "dist/Pastee-$VERSION-linux-${{ matrix.arch }}.deb"
+          ls -la dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pastee-linux-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+
   release:
     name: Publish the release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [test, macos, windows]
+    needs: [test, macos, windows, linux]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
