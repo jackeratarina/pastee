@@ -45,7 +45,8 @@ abstract class DesktopBridge {
   /// [concealed] marks the text as a secret so clipboard history, clipboard
   /// managers and other devices leave it out: org.nspasteboard.ConcealedType
   /// and current-host-only (no Universal Clipboard) on macOS; the formats that
-  /// keep it out of clipboard history (Win+V) and cloud sync on Windows. With
+  /// keep it out of clipboard history (Win+V) and cloud sync on Windows; KDE's
+  /// x-kde-passwordManagerHint ("secret") on Linux. With
   /// [clearOnExit], quitting Pastee empties the clipboard if it still holds
   /// this text.
   Future<int?> writeClipboard(String text,

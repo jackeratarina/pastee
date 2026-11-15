@@ -120,6 +120,10 @@ NativeBridge::~NativeBridge() {
     g_signal_handler_disconnect(window_, window_state_handler_);
     g_signal_handler_disconnect(window_, destroy_handler_);
   }
+  // The messenger keeps the channel alive; it must not call into a freed
+  // bridge.
+  fl_method_channel_set_method_call_handler(channel_, nullptr, nullptr,
+                                            nullptr);
   g_object_unref(channel_);
 }
 
@@ -207,6 +211,16 @@ void NativeBridge::HandleMethodCall(FlMethodCall* call) {
     const int64_t change_count = clipboard_.Write(
         fl_value_get_string(text), GetBoolArgument(args, "concealed"),
         GetBoolArgument(args, "clearOnExit"));
+    if (change_count == 0) {
+      // Like Windows: Dart falls back to Flutter's clipboard.
+      g_autoptr(GError) error = nullptr;
+      if (!fl_method_call_respond_error(call, "clipboard_busy",
+                                        "Couldn't take the clipboard.",
+                                        nullptr, &error)) {
+        g_warning("Failed to answer writeClipboard: %s", error->message);
+      }
+      return;
+    }
     g_autoptr(FlValue) result = fl_value_new_int(change_count);
     Respond(call, result);
   } else if (strcmp(method, "clearClipboard") == 0) {

@@ -20,9 +20,10 @@ class ClipboardWriter {
   ClipboardWriter(const ClipboardWriter&) = delete;
   ClipboardWriter& operator=(const ClipboardWriter&) = delete;
 
-  // Replaces the clipboard with |text| and returns the new change count. A
-  // |concealed| write also offers x-kde-passwordManagerHint = "secret", which
-  // Klipper, CopyQ and other clipboard managers take as "keep this out of the
+  // Replaces the clipboard with |text| and returns the new change count, or 0
+  // if GTK couldn't take the clipboard. A |concealed| write also offers
+  // x-kde-passwordManagerHint = "secret", which Klipper, and clipboard
+  // managers that follow KDE's convention, take as "keep this out of the
   // history". With |concealed| and |clear_on_exit|, ClearOnExit() empties the
   // clipboard when Pastee quits, and the text is never handed to a clipboard
   // manager to keep.
@@ -37,6 +38,8 @@ class ClipboardWriter {
 
  private:
   struct Entry;
+
+  bool StillOwned() const;
 
   static void GetContents(GtkClipboard* clipboard, GtkSelectionData* data,
                           guint info, gpointer user_data);
