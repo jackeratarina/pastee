@@ -282,7 +282,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   /// Copies of these get the clipboard's secret treatment: kept out of
   /// clipboard history and cleared again after a while.
   bool _isSecretItem(PasteItem item) =>
-      item.sensitive || FieldExtractor.extract(item.content).hasSecrets;
+      item.sensitive || extractFields(ref, item.content).hasSecrets;
 
   String _withClearNote(String message, Duration? clearsIn) => clearsIn == null
       ? message
