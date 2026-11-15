@@ -53,6 +53,8 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 # System-level dependencies.
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GTK REQUIRED IMPORTED_TARGET gtk+-3.0)
+# The summon shortcut's key grab on X11 (runner/global_hotkey.cc).
+pkg_check_modules(X11 REQUIRED IMPORTED_TARGET x11)
 
 # Application build; see runner/CMakeLists.txt.
 add_subdirectory("runner")
@@ -95,6 +97,11 @@ install(TARGETS ${BINARY_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
   COMPONENT Runtime)
 
 install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
+  COMPONENT Runtime)
+
+# The window icon when Pastee isn't installed with its icon theme entry (the
+# tarball); see SetWindowIcon in runner/my_application.cc.
+install(FILES "runner/resources/app_icon.png" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   COMPONENT Runtime)
 
 install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
