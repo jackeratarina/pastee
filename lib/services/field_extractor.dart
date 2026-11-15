@@ -6,6 +6,9 @@ library;
 
 import 'dart:math' as math;
 
+import '../model/field_config.dart';
+import 'custom_fields.dart';
+
 enum FieldKind {
   password,
   token,
@@ -19,6 +22,9 @@ enum FieldKind {
   code,
   labeled,
   line,
+
+  /// Found by one of your own phrases or patterns.
+  custom,
 }
 
 /// A half-open range `[start, end)` of UTF-16 offsets into the content.
@@ -49,13 +55,14 @@ final class ExtractedField {
     required this.label,
     required this.value,
     required this.span,
+    required this.number,
     this.secret = false,
   });
 
   final FieldKind kind;
 
-  /// Short human label: "Password", "Email", "Order", or the key of a
-  /// `Key: value` line such as "Host".
+  /// Short human label: "Password", "Email", "Order", the key of a
+  /// `Key: value` line such as "Host", or the name of your own field.
   final String label;
 
   /// What gets copied. For card numbers this is the digits without spaces.
@@ -64,12 +71,16 @@ final class ExtractedField {
   /// Where the field sits in the content.
   final Span span;
 
+  /// 1–9: the field ⌘N / Ctrl+N copies. Unique within an extraction, but not
+  /// always 1, 2, 3…: a field that asks for number 5 in Settings gets 5.
+  final int number;
+
   /// Hidden behind dots unless the user reveals it.
   final bool secret;
 
   @override
   String toString() =>
-      'ExtractedField($kind, $label, "$value", secret: $secret)';
+      'ExtractedField($number, $kind, $label, "$value", secret: $secret)';
 }
 
 final class Extraction {
@@ -82,8 +93,9 @@ final class Extraction {
   static const empty =
       Extraction(fields: [], secretSpans: [], secretValues: <String>{});
 
-  /// At most [FieldExtractor.maxFields] fields: detected fields in reading
-  /// order, then plain lines as a fallback.
+  /// At most [FieldExtractor.maxFields] fields, in order of their numbers.
+  /// With the default settings that is the detected fields in reading order,
+  /// then plain lines as a fallback.
   final List<ExtractedField> fields;
 
   /// Sorted, non-overlapping ranges of the content to mask.
@@ -94,6 +106,14 @@ final class Extraction {
   final Set<String> secretValues;
 
   bool get hasSecrets => secretSpans.isNotEmpty;
+
+  /// The field ⌘[number] copies, if there is one.
+  ExtractedField? fieldNumbered(int number) {
+    for (final field in fields) {
+      if (field.number == number) return field;
+    }
+    return null;
+  }
 }
 
 enum _Cat { password, pin, token, otp, cvv, username, phone, code }
@@ -105,9 +125,21 @@ final class _Candidate {
     required this.value,
     required this.span,
     required this.priority,
+    required BuiltInField this.builtIn,
     this.secret = false,
     this.group,
-  });
+  }) : rule = null;
+
+  _Candidate.custom({
+    required CustomFieldRule this.rule,
+    required this.value,
+    required this.span,
+  })  : kind = FieldKind.custom,
+        label = rule.name,
+        priority = _pCustom,
+        secret = rule.secret,
+        builtIn = null,
+        group = null;
 
   final FieldKind kind;
   final String label;
@@ -116,23 +148,90 @@ final class _Candidate {
   final int priority;
   final bool secret;
 
+  /// Which switch and number in Settings applies: a built-in kind, or (for
+  /// your own fields) the rule that found it.
+  final BuiltInField? builtIn;
+  final CustomFieldRule? rule;
+
   /// Candidates of the same group may overlap: a database URL and the password
   /// inside it are both useful fields.
   final int? group;
 
-  bool conflictsWith(_Candidate other) =>
-      span.overlaps(other.span) && (group == null || group != other.group);
+  bool conflictsWith(_Candidate other) {
+    if (!span.overlaps(other.span)) return false;
+    if (group != null && group == other.group) return false;
+    // One of your fields inside a longer built-in one, like a code inside a
+    // link: both are useful. (The same text is yours alone.)
+    if (rule != null && other.rule == null && other._holds(this)) return false;
+    if (other.rule != null && rule == null && _holds(other)) return false;
+    return true;
+  }
 
-  ExtractedField toField() => ExtractedField(
+  bool _holds(_Candidate inner) =>
+      span.start <= inner.span.start &&
+      inner.span.end <= span.end &&
+      span.length > inner.span.length;
+
+  ExtractedField toField(int number) => ExtractedField(
         kind: kind,
         label: label,
         value: value,
         span: span,
+        number: number,
         secret: secret,
       );
 }
 
-// Lower number wins when two candidates claim the same text.
+/// What the built-in detectors find in one content, whatever the settings.
+/// Masking comes from here alone (plus your own secret fields), so turning a
+/// kind off can never unmask it.
+final class _Analysis {
+  _Analysis({
+    required this.text,
+    required this.candidates,
+    required this.accepted,
+    required this.values,
+    required this.secretSpans,
+    required this.secretValues,
+  });
+
+  /// The scanned part of the content, `\r` turned into spaces.
+  final String text;
+
+  /// Best first.
+  final List<_Candidate> candidates;
+
+  /// The candidates that don't overlap a better one or repeat its value.
+  final List<_Candidate> accepted;
+  final Set<String> values;
+
+  /// Not merged yet.
+  final List<Span> secretSpans;
+  final Set<String> secretValues;
+
+  // Only needed (and only worked out) when there are rules of your own.
+
+  /// Links and email addresses, merged and sorted. A phrase inside one is
+  /// part of the address ("?id=42", "admin@…"), not a label.
+  late final List<(int, int)> addresses = [
+    for (final span in FieldExtractor._merge([
+      for (final c in candidates)
+        if (c.builtIn == BuiltInField.link || c.builtIn == BuiltInField.email)
+          c.span,
+    ]))
+      (span.start, span.end),
+  ];
+
+  /// Where a known label followed by ":" or "=" starts, outside addresses.
+  late final List<int> labelStops = [
+    for (final at in FieldExtractor._labelStops(text))
+      if (!CustomFields.isInside(addresses, at)) at,
+  ];
+}
+
+// Lower number wins when two candidates claim the same text. Your own fields
+// beat built-in detection: they are what you asked for.
+const _pCustom = -1;
 const _pPrivateKey = 0;
 const _pKnownToken = 1;
 const _pLabeledSecret = 2;
@@ -156,26 +255,182 @@ class FieldExtractor {
   /// and copied, it just isn't searched for fields.
   static const int scanLimit = 20000;
 
-  static const int _cacheSize = 256;
-  // Map literals are insertion-ordered, which makes this a simple LRU.
-  static final _cache = <String, Extraction>{};
+  /// At most this many fields come from one of your rules, however often it
+  /// matches. (Every match of a secret rule is still masked.)
+  static const int _maxPerRule = 50;
 
-  /// Extracts fields from [content]. Results are memoized, so calling this from
-  /// build methods and key handlers is cheap.
-  static Extraction extract(String content) {
-    final cached = _cache.remove(content);
+  static const int _cacheSize = 256;
+  // Map literals are insertion-ordered, which makes these simple LRUs.
+  static final _cache = <(FieldConfig, String), Extraction>{};
+  static final _analyses = <String, _Analysis>{};
+
+  /// Extracts fields from [content], with your own fields and numbers from
+  /// [config] (the defaults if null). Results are memoized per config and
+  /// content, so calling this from build methods and key handlers is cheap.
+  static Extraction extract(String content, {FieldConfig? config}) {
+    final key = (config ?? FieldConfig.defaults, content);
+    final cached = _cache.remove(key);
     if (cached != null) {
-      _cache[content] = cached;
+      _cache[key] = cached;
       return cached;
     }
-    final result = _run(content);
-    _cache[content] = result;
+    final result = _run(content, key.$1);
+    _cache[key] = result;
     if (_cache.length > _cacheSize) _cache.remove(_cache.keys.first);
     return result;
   }
 
-  static Extraction _run(String content) {
+  static Extraction _run(String content, FieldConfig config) {
     if (content.trim().isEmpty) return Extraction.empty;
+    final analysis = _analyze(content);
+    final text = analysis.text;
+    final matches = config.activeRules.isEmpty
+        ? const <CustomMatch>[]
+        : CustomFields.find(text, config.custom,
+            stops: analysis.labelStops, notLabels: analysis.addresses);
+
+    // Which candidates become fields: your own first, then the built-in ones
+    // by priority, skipping any that overlap one already taken.
+    var accepted = analysis.accepted;
+    var values = analysis.values;
+    if (matches.isNotEmpty) {
+      final custom = <_Candidate>[];
+      final perRule = <int, int>{};
+      for (final m in matches) {
+        final count = perRule[m.ruleIndex] = (perRule[m.ruleIndex] ?? 0) + 1;
+        if (count > _maxPerRule) continue;
+        custom.add(_Candidate.custom(
+            rule: m.rule, value: m.value, span: Span(m.start, m.end)));
+      }
+      accepted = [];
+      values = {};
+      for (final candidate in [...custom, ...analysis.candidates]) {
+        if (accepted.any(candidate.conflictsWith)) continue;
+        if (!values.add(candidate.value)) continue;
+        accepted.add(candidate);
+      }
+    }
+
+    // Masking: everything the built-in detectors mask, always, plus every
+    // match of your own secret rules, masked the same way.
+    final secretSpans = [...analysis.secretSpans];
+    final secretValues = {...analysis.secretValues};
+    for (final m in matches) {
+      if (!m.rule.secret) continue;
+      secretSpans.add(Span(m.start, m.end));
+      for (final (start, end) in m.alsoMask) {
+        secretSpans.add(Span(start, end));
+      }
+      if (secretValues.add(m.value)) {
+        _maskOccurrences(text, m.value, FieldKind.custom, secretSpans);
+      }
+    }
+    if (matches.isNotEmpty) {
+      for (final c in accepted) {
+        if (!c.secret && secretValues.contains(c.value)) {
+          secretSpans.add(c.span);
+        }
+      }
+    }
+
+    // A kind that is turned off still holds its text (it isn't offered as a
+    // plain line instead); it just gets no chip and no number.
+    final numbered = _numbered(
+      [
+        for (final c in accepted)
+          if (_isOn(c, config)) c
+      ],
+      (c) => _numberAskedFor(c, config),
+    );
+    final byNumber = <int, ExtractedField>{
+      for (final entry in numbered.entries)
+        entry.key: entry.value.toField(entry.key),
+    };
+    if (config.numberLines && byNumber.length < maxFields) {
+      _fallbackLines(
+        text,
+        byNumber,
+        [
+          for (final c in accepted) c.span,
+          // "Member ID" on its own line, with the value on the next one.
+          for (final m in matches) Span(m.labelStart, m.labelEnd),
+        ],
+        {...values},
+      );
+    }
+    final numbers = byNumber.keys.toList()..sort();
+
+    return Extraction(
+      fields: List.unmodifiable([for (final n in numbers) byNumber[n]!]),
+      secretSpans: List.unmodifiable(_merge(secretSpans)),
+      secretValues: Set.unmodifiable(secretValues),
+    );
+  }
+
+  static bool _isOn(_Candidate c, FieldConfig config) {
+    final builtIn = c.builtIn;
+    return builtIn == null || config[builtIn].enabled;
+  }
+
+  static int? _numberAskedFor(_Candidate c, FieldConfig config) {
+    final rule = c.rule;
+    if (rule != null) return rule.number;
+    return config[c.builtIn!].number;
+  }
+
+  /// Numbers the fields. [candidates] are best first.
+  ///
+  /// Fields that ask for a number get it first; when two ask for the same one,
+  /// the one earlier in the note wins and the other is numbered automatically.
+  /// The best of the rest then fill the free numbers in reading order, so a
+  /// field with its own number is never pushed out by them.
+  static Map<int, _Candidate> _numbered(
+      List<_Candidate> candidates, int? Function(_Candidate) numberAskedFor) {
+    final result = <int, _Candidate>{};
+    final asking = [
+      for (final c in candidates)
+        if (numberAskedFor(c) != null) c
+    ]..sort(_byPosition);
+    final placed = <_Candidate>{};
+    for (final c in asking) {
+      final number = numberAskedFor(c)!;
+      if (result.containsKey(number)) continue;
+      result[number] = c;
+      placed.add(c);
+    }
+    final rest = candidates
+        .where((c) => !placed.contains(c))
+        .take(maxFields - result.length)
+        .toList()
+      ..sort(_byPosition);
+    var next = 1;
+    for (final c in rest) {
+      while (result.containsKey(next)) {
+        next++;
+      }
+      result[next] = c;
+    }
+    return result;
+  }
+
+  static int _byPosition(_Candidate a, _Candidate b) {
+    final byStart = a.span.start.compareTo(b.span.start);
+    return byStart != 0 ? byStart : a.span.end.compareTo(b.span.end);
+  }
+
+  static _Analysis _analyze(String content) {
+    final cached = _analyses.remove(content);
+    if (cached != null) {
+      _analyses[content] = cached;
+      return cached;
+    }
+    final result = _detect(content);
+    _analyses[content] = result;
+    if (_analyses.length > _cacheSize) _analyses.remove(_analyses.keys.first);
+    return result;
+  }
+
+  static _Analysis _detect(String content) {
     var text =
         content.length > scanLimit ? content.substring(0, scanLimit) : content;
     // Windows line endings: treat \r as a space so offsets stay identical to
@@ -229,23 +484,13 @@ class FieldExtractor {
     }
 
     // Secrets are masked wherever they appear, even if only one occurrence
-    // became a field. Short values (a 4-digit PIN) only mask the detected spot,
-    // or every "2024" in the note would turn into dots.
+    // became a field.
     final secretSpans = <Span>[];
     final secretValues = <String>{};
     for (final c in [...accepted.where((c) => c.secret), ...hiddenSecrets]) {
       secretSpans.add(c.span);
       if (!secretValues.add(c.value)) continue; // other occurrences done
-      final numeric = RegExp(r'^\d+$').hasMatch(c.value);
-      if (c.value.length >= (numeric ? 6 : 4) && c.kind != FieldKind.card) {
-        var from = 0;
-        while (true) {
-          final at = text.indexOf(c.value, from);
-          if (at < 0) break;
-          secretSpans.add(Span(at, at + c.value.length));
-          from = at + c.value.length;
-        }
-      }
+      _maskOccurrences(text, c.value, c.kind, secretSpans);
     }
 
     // A non-secret field whose value is also a secret is masked too.
@@ -253,18 +498,30 @@ class FieldExtractor {
       if (!c.secret && secretValues.contains(c.value)) secretSpans.add(c.span);
     }
 
-    final chosen = accepted.take(maxFields).toList()
-      ..sort((a, b) => a.span.start.compareTo(b.span.start));
-    final fields = [for (final c in chosen) c.toField()];
-    if (fields.length < maxFields) {
-      _fallbackLines(text, fields, values);
-    }
-
-    return Extraction(
-      fields: List.unmodifiable(fields),
-      secretSpans: List.unmodifiable(_merge(secretSpans)),
-      secretValues: Set.unmodifiable(secretValues),
+    return _Analysis(
+      text: text,
+      candidates: candidates,
+      accepted: accepted,
+      values: values,
+      secretSpans: secretSpans,
+      secretValues: secretValues,
     );
+  }
+
+  /// Adds every occurrence of the secret [value] to [spans]. Short values (a
+  /// 4-digit PIN) only mask the detected spot, or every "2024" in the note
+  /// would turn into dots. So do card numbers, which are found in any spacing.
+  static void _maskOccurrences(
+      String text, String value, FieldKind kind, List<Span> spans) {
+    final numeric = RegExp(r'^\d+$').hasMatch(value);
+    if (value.length < (numeric ? 6 : 4) || kind == FieldKind.card) return;
+    var from = 0;
+    while (true) {
+      final at = text.indexOf(value, from);
+      if (at < 0) break;
+      spans.add(Span(at, at + value.length));
+      from = at + value.length;
+    }
   }
 
   // ── private keys & well-known token formats ───────────────────────────────
@@ -280,6 +537,7 @@ class FieldExtractor {
         value: m.group(0)!,
         span: Span(m.start, m.end),
         priority: _pPrivateKey,
+        builtIn: BuiltInField.token,
         secret: true,
       ));
     }
@@ -319,6 +577,7 @@ class FieldExtractor {
           value: m.group(0)!,
           span: Span(m.start, m.end),
           priority: _pKnownToken,
+          builtIn: BuiltInField.token,
           secret: true,
         ));
       }
@@ -332,6 +591,7 @@ class FieldExtractor {
         value: value,
         span: Span(start, m.end),
         priority: _pKnownToken,
+        builtIn: BuiltInField.token,
         secret: true,
       ));
     }
@@ -484,6 +744,17 @@ class FieldExtractor {
       RegExp(r'^[ \t]*(?:#|no\.|nr\.|number)[ \t]*', caseSensitive: false);
   static final _spaceSep = RegExp(r'^[ \t]+(?=[0-9+(#])');
 
+  static final _strongSepAfter = RegExp(r'[ \t]*[:=：]');
+
+  /// "… PIN: 4821": where each known label with a ":" or "=" after it
+  /// starts, so a value of your own on the same line stops before it.
+  static List<int> _labelStops(String text) => [
+        for (final m in _labelRe.allMatches(text))
+          if (_strongSepAfter.matchAsPrefix(text, m.end) != null &&
+              _lookupLabel(m.group(0)!) != null)
+            m.start,
+      ];
+
   static String _normalizeLabel(String raw) =>
       raw.toLowerCase().replaceAll(RegExp(r'[ _-]+'), ' ').trim();
 
@@ -554,6 +825,7 @@ class FieldExtractor {
         value: digits,
         span: Span(start, start + digits.length),
         priority: _pLabeledSecret,
+        builtIn: BuiltInField.pin,
         secret: true,
       ));
     }
@@ -610,9 +882,21 @@ class FieldExtractor {
       value: value,
       span: span,
       priority: priority,
+      builtIn: _fieldOf(cat),
       secret: secret,
     );
   }
+
+  /// The Settings group a labeled value belongs to.
+  static BuiltInField _fieldOf(_Cat cat) => switch (cat) {
+        _Cat.password => BuiltInField.password,
+        _Cat.pin || _Cat.otp => BuiltInField.pin,
+        _Cat.cvv => BuiltInField.card,
+        _Cat.token => BuiltInField.token,
+        _Cat.username => BuiltInField.username,
+        _Cat.phone => BuiltInField.phone,
+        _Cat.code => BuiltInField.reference,
+      };
 
   static final _cellBreak = RegExp(r'\t| \| | \|\| ');
   static final _valueEndingSemicolon = RegExp(r';(?=\s*[A-Za-z][\w ]*=|$)');
@@ -777,6 +1061,26 @@ class FieldExtractor {
     unicode: true,
   );
 
+  static final _cardSecretWords = RegExp(r'(?<![\p{L}])(?:cvv|cvc)(?![\p{L}])',
+      caseSensitive: false, unicode: true);
+  static final _codeSecretWords = RegExp(
+      r'(?<![\p{L}])(?:pin|otp|mã pin|ma pin|mã bảo mật|ma bao mat)(?![\p{L}])',
+      caseSensitive: false,
+      unicode: true);
+  static final _tokenSecretWords = RegExp(
+      r'(?<![\p{L}])(?:secret|token|api[ _-]?key|private[ _-]?key)(?![\p{L}])',
+      caseSensitive: false,
+      unicode: true);
+
+  /// The Settings group of a secret whose key isn't a known label: "Wifi
+  /// pass for guests" is a password, "Prod token for CI" a token.
+  static BuiltInField _secretKeyField(String key) {
+    if (_cardSecretWords.hasMatch(key)) return BuiltInField.card;
+    if (_codeSecretWords.hasMatch(key)) return BuiltInField.pin;
+    if (_tokenSecretWords.hasMatch(key)) return BuiltInField.token;
+    return BuiltInField.password;
+  }
+
   /// A multi-word secret: the rest of the value, without quotes.
   static (String, Span)? _wholeValue(String text, int start, int end) {
     final raw = text.substring(start, end);
@@ -818,6 +1122,7 @@ class FieldExtractor {
           value: phrase.$1,
           span: phrase.$2,
           priority: _pLabeledSecret,
+          builtIn: BuiltInField.password,
           secret: true,
         ));
       } else if (_secretWords.hasMatch(key)) {
@@ -831,6 +1136,7 @@ class FieldExtractor {
           value: parsed.$1,
           span: parsed.$2,
           priority: _pLabeledSecret,
+          builtIn: _secretKeyField(key),
           secret: true,
         ));
       } else if (_usernameWords.hasMatch(key)) {
@@ -844,6 +1150,7 @@ class FieldExtractor {
           value: parsed.$1,
           span: parsed.$2,
           priority: _pLabeledOther,
+          builtIn: BuiltInField.username,
         ));
       } else {
         out.add(_Candidate(
@@ -852,6 +1159,7 @@ class FieldExtractor {
           value: value,
           span: Span(valueStart, valueStart + value.length),
           priority: _pGeneric,
+          builtIn: BuiltInField.labeled,
         ));
       }
     }
@@ -878,6 +1186,7 @@ class FieldExtractor {
         value: value,
         span: Span(start, start + value.length),
         priority: _pLabeledSecret,
+        builtIn: entry != null ? _fieldOf(entry.$1) : _secretKeyField(key),
         secret: true,
       ));
     }
@@ -899,6 +1208,7 @@ class FieldExtractor {
         value: digits,
         span: Span(m.start, m.end),
         priority: _pCard,
+        builtIn: BuiltInField.card,
         secret: true,
       ));
     }
@@ -960,6 +1270,7 @@ class FieldExtractor {
         value: url,
         span: Span(m.start, m.start + url.length),
         priority: _pUrl,
+        builtIn: BuiltInField.link,
         group: group,
       ));
       final creds = _urlCredentials.firstMatch(url);
@@ -972,6 +1283,7 @@ class FieldExtractor {
           value: password,
           span: Span(start, start + password.length),
           priority: _pUrlPassword,
+          builtIn: BuiltInField.password,
           secret: true,
           group: group,
         ));
@@ -1015,6 +1327,7 @@ class FieldExtractor {
         value: m.group(0)!,
         span: Span(m.start, m.end),
         priority: _pEmail,
+        builtIn: BuiltInField.email,
       ));
     }
   }
@@ -1030,6 +1343,7 @@ class FieldExtractor {
         value: m.group(0)!,
         span: Span(m.start, m.end),
         priority: _pIp,
+        builtIn: BuiltInField.ip,
       ));
     }
   }
@@ -1045,6 +1359,7 @@ class FieldExtractor {
         value: m.group(0)!,
         span: Span(m.start, m.end),
         priority: _pUuid,
+        builtIn: BuiltInField.reference,
       ));
     }
   }
@@ -1070,6 +1385,7 @@ class FieldExtractor {
         value: m.group(0)!,
         span: Span(m.start, m.end),
         priority: _pPhone,
+        builtIn: BuiltInField.phone,
       ));
     }
   }
@@ -1113,6 +1429,7 @@ class FieldExtractor {
         value: token,
         span: Span(offset, offset + token.length),
         priority: _pGuessedPassword,
+        builtIn: BuiltInField.password,
         secret: true,
       ));
     }
@@ -1120,9 +1437,12 @@ class FieldExtractor {
 
   // ── plain lines as a fallback ──────────────────────────────────────────────
 
-  static void _fallbackLines(
-      String text, List<ExtractedField> fields, Set<String> values) {
-    final taken = [for (final f in fields) f.span];
+  /// Gives the free numbers in [fields] to plain lines, in reading order.
+  /// Lines that overlap [taken] (any accepted candidate, including kinds that
+  /// are turned off) or repeat one of [values] are skipped.
+  static void _fallbackLines(String text, Map<int, ExtractedField> fields,
+      List<Span> taken, Set<String> values) {
+    var number = 1;
     for (final (start, end) in _lines(text)) {
       if (fields.length >= maxFields) break;
       final raw = text.substring(start, end);
@@ -1138,12 +1458,16 @@ class FieldExtractor {
       if (_lookupLabel(bare) != null) continue; // "Password" heading
       if (line.endsWith(':') && line.length <= 40) continue; // "Credentials:"
       if (!values.add(line)) continue;
-      fields.add(ExtractedField(
+      while (fields.containsKey(number)) {
+        number++;
+      }
+      fields[number] = ExtractedField(
         kind: FieldKind.line,
         label: 'Line',
         value: line,
         span: span,
-      ));
+        number: number,
+      );
     }
   }
 

@@ -30,7 +30,15 @@ IconData iconForField(FieldKind kind) => switch (kind) {
       FieldKind.code => Icons.tag,
       FieldKind.labeled => Icons.label_outline,
       FieldKind.line => Icons.text_snippet_outlined,
+      FieldKind.custom => Icons.bookmark_border,
     };
+
+/// What a field chip says when its value isn't hidden. Your own fields have
+/// no telling icon, so their name comes first.
+String visibleChipText(ExtractedField field, String value) =>
+    field.kind == FieldKind.custom
+        ? truncateGraphemes('${field.label}: $value', 32)
+        : truncateGraphemes(value, 24);
 
 class PasteTile extends StatefulWidget {
   const PasteTile({
@@ -463,13 +471,13 @@ class _PasteTileState extends State<PasteTile>
           runSpacing: 4,
           children: [
             for (var i = 0; i < fields.length; i++)
-              _FieldChip(
-                index: i + 1,
+              FieldChip(
+                number: fields[i].number,
                 icon: iconForField(fields[i].kind),
                 text: _chipText(fields[i], hidden),
                 masked: _chipMasked(fields[i], hidden),
                 colorScheme: colorScheme,
-                tooltip: _chipTooltip(fields[i], i, hidden),
+                tooltip: _chipTooltip(fields[i], hidden),
                 flashOpacity:
                     _activeFlashField == i ? _flashOpacity.value : 0.0,
                 onTap: () => widget.onFieldCopy(fields[i].value, i),
@@ -494,11 +502,11 @@ class _PasteTileState extends State<PasteTile>
           ? '${_label(field, hidden)} ${Masker.hiddenFieldText(field)}'
           : '${_label(field, hidden)} ••••';
     }
-    return truncateGraphemes(_visibleValue(field, hidden), 24);
+    return visibleChipText(field, _visibleValue(field, hidden));
   }
 
-  String _chipTooltip(ExtractedField field, int index, bool hidden) {
-    final keys = primaryShortcut('${index + 1}');
+  String _chipTooltip(ExtractedField field, bool hidden) {
+    final keys = primaryShortcut('${field.number}');
     if (_chipMasked(field, hidden)) {
       return '$keys  ${_label(field, hidden)} (hidden)';
     }
@@ -530,9 +538,12 @@ class _PasteTileState extends State<PasteTile>
 
 // ── small widgets ────────────────────────────────────────
 
-class _FieldChip extends StatelessWidget {
-  const _FieldChip({
-    required this.index,
+/// A numbered field chip: the number ⌘N copies, an icon for the kind, and the
+/// value (or dots).
+class FieldChip extends StatelessWidget {
+  const FieldChip({
+    super.key,
+    required this.number,
     required this.icon,
     required this.text,
     required this.masked,
@@ -542,14 +553,14 @@ class _FieldChip extends StatelessWidget {
     required this.onTap,
   });
 
-  final int index;
+  final int number;
   final IconData icon;
   final String text;
   final bool masked;
   final ColorScheme colorScheme;
   final String tooltip;
   final double flashOpacity;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -594,7 +605,7 @@ class _FieldChip extends StatelessWidget {
                     borderRadius: BorderRadius.circular(4),
                   ),
                   child: Text(
-                    '$index',
+                    '$number',
                     style: TextStyle(
                       color: colorScheme.onPrimary,
                       fontSize: 10,
@@ -606,13 +617,18 @@ class _FieldChip extends StatelessWidget {
                 const SizedBox(width: 4),
                 Icon(icon, size: 12, color: fg),
                 const SizedBox(width: 3),
-                Text(
-                  text,
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: fg,
-                    fontFamily: AppTheme.monoFont,
-                    fontFamilyFallback: AppTheme.monoFallback,
+                // Shrinks rather than overflows in a narrow window.
+                Flexible(
+                  child: Text(
+                    text,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: fg,
+                      fontFamily: AppTheme.monoFont,
+                      fontFamilyFallback: AppTheme.monoFallback,
+                    ),
                   ),
                 ),
               ],
