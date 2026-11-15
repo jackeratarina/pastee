@@ -160,8 +160,9 @@ class MainFlutterWindow: NSWindow {
 
 /// Copies text the way password managers do, and clears it again on request.
 final class SecretClipboard {
-  /// The nspasteboard.org marker that clipboard managers (Maccy, Paste,
-  /// Raycast, Alfred, …) treat as "a password: don't record or show it".
+  /// The nspasteboard.org marker for "a password: don't record or show it",
+  /// which clipboard managers that follow the convention (Maccy, for one)
+  /// skip.
   private static let concealedType = NSPasteboard.PasteboardType(
     "org.nspasteboard.ConcealedType")
 
