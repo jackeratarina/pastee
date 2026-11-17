@@ -1,7 +1,7 @@
 name: pastee
 description: "Instant Shortcut Notes — a keyboard-first clipboard notes app for macOS, Windows and Linux."
 publish_to: 'none'
-version: 1.3.0+5
+version: 1.4.0+6
 
 environment:
   sdk: '>=3.5.0 <4.0.0'

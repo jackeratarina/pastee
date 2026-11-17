@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.0 — 2026-11-17
+
+### New
+- **Pastee updates itself** from its GitHub releases. Once a day it checks for a new release; when there is one, a button in the header shows what's new since your version. **Update and restart** downloads the file for your computer, checks its SHA-256 against GitHub's record and the release's `SHA256SUMS.txt`, and installs nothing if they don't match. Then Pastee quits, the new version goes in, and Pastee starts again and says it was updated. The macOS app replaces itself where it is; the Windows setup runs again without questions; the Windows zip and the Linux tarball replace their files in place; the Linux .deb is installed with apt, which asks for your password. If the new version can't go in, the old one stays.
+- **Settings → Updates** shows your version and the last check, has **Check now**, and turns the daily check off. **Skip this version** hides a release until the next one.
+- The check is the only time Pastee goes online: one request to GitHub, without an account, that sends nothing about you or your items.
+
+### Fixed
+- The Linux .deb now pulls in the EGL and OpenGL ES libraries Pastee draws with (`libegl1`, `libgles2`). On a minimal system without them, Pastee quit as soon as it started.
+
 ## 1.3.0 — 2026-11-17
 
 ### New
