@@ -6,16 +6,20 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../model/paste_item.dart';
+import '../model/quick_code.dart';
 import '../providers/field_config_provider.dart';
 import '../providers/providers.dart';
 import '../services/clipboard_service.dart';
 import '../services/field_extractor.dart';
 import '../services/paste_titles.dart';
+import '../services/quick_codes.dart';
 import '../services/text_utils.dart';
 import 'key_cap.dart';
 import 'paste_tile.dart';
+import 'quick_code_dialog.dart';
 import 'settings_dialog.dart';
 import 'shortcut_labels.dart';
+import 'theme.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -215,9 +219,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   void _onSearchChanged(String query) {
     _debounce?.cancel();
+    // A quick code shows its item right away.
+    if (_quickCodeIn(query) != null) {
+      ref.read(searchQueryProvider.notifier).state = query;
+      if (_scrollController.hasClients) _scrollController.jumpTo(0);
+      return;
+    }
     _debounce = Timer(const Duration(milliseconds: 250), () {
       if (mounted) ref.read(searchQueryProvider.notifier).state = query;
     });
+  }
+
+  /// The quick code that [text] is, if it is one.
+  QuickCodeHit? _quickCodeIn(String text) {
+    final key = QuickCode.normalize(text);
+    return key.isEmpty ? null : ref.read(quickCodeIndexProvider)[key];
   }
 
   /// Applies a search that is still waiting for its debounce, so Enter or
@@ -304,6 +320,108 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final items = ref.read(filteredPasteListProvider);
     if (items.isEmpty) return;
     await _copyItem(items.first);
+  }
+
+  /// Enter: when the search is a quick code, copy its field; otherwise copy
+  /// the top item.
+  Future<void> _enter() async {
+    final hit = _quickCodeIn(_searchController.text);
+    if (hit == null) return _copyFirstItem();
+    _flushSearch();
+    await _copyQuickCode(hit);
+  }
+
+  /// Copies the field of a quick code, then hides Pastee so focus goes back
+  /// to the app you came from, ready for the paste.
+  Future<void> _copyQuickCode(QuickCodeHit hit) async {
+    final item = hit.item;
+    final extraction = extractFields(ref, item.content);
+    final index = quickCodeFieldIndex(hit.code, extraction);
+    if (index < 0) {
+      // Only a Fields & numbers change can do this: the note itself never
+      // changes.
+      _showSnackBar(
+        'Pastee no longer finds the field that “${hit.code.code}” copies. '
+        'Check Settings → Fields & numbers.',
+        duration: const Duration(seconds: 6),
+        action: SnackBarAction(
+          label: 'Remove code',
+          onPressed: () => ref
+              .read(pasteListProvider.notifier)
+              .setQuickCode(item.id, replacing: [hit.code]),
+        ),
+      );
+      return;
+    }
+    final field = extraction.fields[index];
+    final clearsIn = await ref
+        .read(clipboardServiceProvider)
+        .setText(field.value, secret: field.secret || item.sensitive);
+    if (!mounted) return;
+    _clearSearch();
+    setState(() {});
+    _showSnackBar(_withClearNote(
+        'Copied ${item.sensitive ? safeFieldLabel(field) : field.label}',
+        clearsIn));
+    _hideWindow();
+  }
+
+  /// Right-click on a field chip: give the field a quick code, change it or
+  /// remove it.
+  Future<void> _editQuickCode(PasteItem item, int fieldIndex) async {
+    final extraction = extractFields(ref, item.content);
+    if (fieldIndex < 0 || fieldIndex >= extraction.fields.length) return;
+    final field = extraction.fields[fieldIndex];
+    final current = quickCodesOfField(item.quickCodes, extraction, fieldIndex);
+    final label = item.sensitive ? safeFieldLabel(field) : field.label;
+    final code = await showQuickCodeDialog(
+      context,
+      fieldLabel: label,
+      current: current.firstOrNull?.code,
+      problemWith: (code) => _quickCodeProblem(code, current),
+    );
+    if (!mounted) return;
+    if (code == null) {
+      _restoreFocus();
+      return;
+    }
+    try {
+      await ref.read(pasteListProvider.notifier).setQuickCode(
+            item.id,
+            replacing: current,
+            code: code.isEmpty
+                ? null
+                : QuickCode(
+                    code: code, start: field.span.start, end: field.span.end),
+          );
+    } catch (error) {
+      _showSnackBar('Couldn’t save the quick code: $error',
+          duration: const Duration(seconds: 6));
+      return;
+    }
+    if (!mounted) return;
+    _restoreFocus();
+    _showSnackBar(
+      code.isEmpty
+          ? 'Quick code removed'
+          : 'Type “$code” in the search bar and press Enter to copy $label',
+      duration: const Duration(seconds: 4),
+    );
+  }
+
+  /// Why [code] can't be the quick code of a field whose codes are now
+  /// [current], or null if it can.
+  String? _quickCodeProblem(String code, List<QuickCode> current) {
+    final problem = QuickCode.problemWith(code);
+    if (problem != null) return problem;
+    final owner = ref.read(pasteListProvider.notifier).findQuickCode(code);
+    if (owner == null || current.contains(owner.code)) return null;
+    // Say where, without showing anything hidden.
+    final title = displayTitle(
+        owner.item, extractFields(ref, owner.item.content),
+        hidden: true);
+    return '“${owner.code.code}” already copies a field of '
+        '“${truncateGraphemes(title, 30)}”';
   }
 
   Future<void> _copyField(PasteItem item, int index) async {
@@ -587,7 +705,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         return KeyEventResult.handled;
       }
       if (isEnter) {
-        _copyFirstItem();
+        _enter();
         return KeyEventResult.handled;
       }
       if (key == LogicalKeyboardKey.arrowDown) {
@@ -608,7 +726,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       return KeyEventResult.handled;
     }
     if (isEnter) {
-      _copyFirstItem();
+      _enter();
       return KeyEventResult.handled;
     }
     final character = event.character;
@@ -631,6 +749,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final items = ref.watch(filteredPasteListProvider);
     final settings = ref.watch(settingsProvider);
     final fieldConfig = ref.watch(fieldConfigProvider);
+    final quickCodeMatch = ref.watch(quickCodeMatchProvider);
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
@@ -672,6 +791,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                               .updateTitle(item.id, t),
                           onFieldCopy: (_, fieldIndex) =>
                               _copyField(item, fieldIndex),
+                          onFieldQuickCode: (fieldIndex) =>
+                              _editQuickCode(item, fieldIndex),
+                          quickCodeMatch: quickCodeMatch?.item.id == item.id
+                              ? quickCodeMatch!.code
+                              : null,
                           onDelete: () => _deleteItem(item),
                           onToggleReveal: () => _toggleReveal(item.id),
                           onToggleSensitive: () => _toggleSensitive(item),
@@ -839,6 +963,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Widget _buildSearchBar(ThemeData theme, ColorScheme colorScheme) {
+    final index = ref.watch(quickCodeIndexProvider);
+    final key = QuickCode.normalize(_searchController.text);
+    final hit = key.isEmpty ? null : index[key];
+    // Green: Enter copies the field this code was given. Red: the code exists
+    // but Pastee no longer finds its field.
+    final Color? codeColor = hit == null
+        ? null
+        : quickCodeFieldIndex(hit.code, extractFields(ref, hit.item.content)) >=
+                0
+            ? AppTheme.quickCode(colorScheme)
+            : colorScheme.error;
+    final codeBorder = codeColor == null
+        ? null
+        : OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: BorderSide(color: codeColor, width: 1.5));
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
       decoration: BoxDecoration(
@@ -855,16 +995,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           _onSearchChanged(query);
           setState(() {});
         },
-        style:
-            theme.textTheme.bodyMedium?.copyWith(color: colorScheme.onSurface),
+        style: theme.textTheme.bodyMedium?.copyWith(
+          color: codeColor ?? colorScheme.onSurface,
+          fontWeight: codeColor == null ? null : FontWeight.w600,
+        ),
         decoration: InputDecoration(
-          hintText: 'Search… (${primaryShortcut('F')}, or just start typing)',
+          hintText: index.isEmpty
+              ? 'Search… (${primaryShortcut('F')}, or just start typing)'
+              : 'Search or type a quick code… (${primaryShortcut('F')})',
           hintStyle: TextStyle(
               color: colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
               fontSize: 13),
-          prefixIcon: Icon(Icons.search,
-              size: 20,
-              color: colorScheme.onSurfaceVariant.withValues(alpha: 0.5)),
+          prefixIcon: codeColor == null
+              ? Icon(Icons.search,
+                  size: 20,
+                  color: colorScheme.onSurfaceVariant.withValues(alpha: 0.5))
+              : Tooltip(
+                  message: codeColor == colorScheme.error
+                      ? 'A quick code whose field Pastee no longer finds'
+                      : 'A quick code: press Enter to copy its field',
+                  child: Icon(Icons.key_rounded, size: 20, color: codeColor),
+                ),
           suffixIcon: _searchController.text.isNotEmpty
               ? IconButton(
                   tooltip: 'Clear search',
@@ -877,17 +1028,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               : null,
           isDense: true,
           filled: true,
-          fillColor: colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
+          fillColor: codeColor?.withValues(alpha: 0.08) ??
+              colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
           contentPadding:
               const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(10),
               borderSide: BorderSide.none),
-          focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(10),
-              borderSide: BorderSide(
-                  color: colorScheme.primary.withValues(alpha: 0.5),
-                  width: 1.5)),
+          enabledBorder: codeBorder,
+          focusedBorder: codeBorder ??
+              OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide(
+                      color: colorScheme.primary.withValues(alpha: 0.5),
+                      width: 1.5)),
         ),
       ),
     );

@@ -23,6 +23,13 @@ class AppTheme {
 
   static const monoFallback = ['Menlo', 'Consolas', 'Courier New', 'monospace'];
 
+  /// The green of a quick code: the search bar when what you typed is one,
+  /// and the field it copies.
+  static Color quickCode(ColorScheme scheme) =>
+      scheme.brightness == Brightness.dark
+          ? const Color(0xFF7DDA94)
+          : const Color(0xFF1B7F3B);
+
   static ThemeData _build(ColorScheme colorScheme) {
     return ThemeData(
       useMaterial3: true,

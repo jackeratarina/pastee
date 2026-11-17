@@ -48,6 +48,7 @@ The builds are not code-signed yet, so the first launch shows a warning:
 - **Clipboard capture.** Paste anything with `⌘V` / `Ctrl+V`. Duplicates are detected and skipped.
 - **Smart field extraction.** Up to 9 copyable fields per item: passwords, usernames, emails, links, phone numbers, order and invoice numbers, IP addresses, API keys, card numbers, one-time codes, and any `Key: value` line. English and Vietnamese labels.
 - **Your own fields and numbers.** Teach Pastee your own phrases ("Member ID", "Mã thành viên") or patterns, and choose which number copies what, e.g. `⌘1` always the password. See [Fields & numbers](#fields--numbers).
+- **Quick codes.** Give a field a short code like `st2`, then type it in the search bar and press `Enter`: Pastee copies that field and hides, back in the app you were in. No searching. See [Quick codes](#quick-codes).
 - **App Lock.** Ask for a passcode, Touch ID or Windows Hello (passcode only on Linux) before Pastee shows anything: when it starts, and again after a time away that you choose. `⌘L` locks it right away.
 - **Password masking.** Detected secrets show as `••••••••` everywhere until you click the eye. Copying always gets the real value. Mark any item **always hidden** with the lock.
 - **Instant copy.** `⌘C` copies the top item, `⌘1`–`⌘9` copies one of its fields, and `Enter` copies the top search result.
@@ -66,7 +67,7 @@ On Windows and Linux, use `Ctrl` wherever macOS uses `⌘`.
 |---|---|
 | **⌃⌘V** / **Alt+Shift+V** / **Ctrl+Alt+V** | Show or hide Pastee from any app (macOS / Windows / Linux, changeable in Settings) |
 | `⌘V` | Save what's on the clipboard as a new item |
-| `⌘C` or `Enter` | Copy the top item |
+| `⌘C` or `Enter` | Copy the top item. When the search is a [quick code](#quick-codes), `Enter` copies its field instead and hides Pastee |
 | `⌘1`–`⌘9` | Copy the top item's field with that number |
 | `⌘X` | Cut the top item (copy, then delete) |
 | `Delete` / `Backspace` | Delete the top item |
@@ -113,6 +114,16 @@ To have Pastee ready after you log in, add it under **System Settings → Genera
 
 Patterns are checked for speed before they're saved. They are case-sensitive and run one line at a time.
 
+## Quick codes
+
+Copy a password without looking for it: give its field a short code, then type the code in the search bar.
+
+1. **Set a code.** Right-click a field chip (or press and hold it) and type a code, such as `st2` for the password of your "silvertiger" note. One character is enough; spaces aren't allowed and capitals don't matter. The code then shows in green on the chip.
+2. **Type it.** Summon Pastee (unlocking it if App Lock is on) and type `st2`. The search bar turns green, and the note comes to the top with that field outlined, even though `st2` appears nowhere in it.
+3. **Press `Enter`.** Pastee copies the field and hides, handing focus back to the app you were in, so `⌘V` / `Ctrl+V` pastes it right there. A password is copied as a secret: it stays out of clipboard history and clears itself like any copied secret.
+
+Each code belongs to one field, and each field has at most one code: right-click the chip again to change or remove it. Codes are saved with their note, encrypted, and go when the note is deleted. A code is a shortcut, not a password; App Lock is what keeps your notes private. If a change in [Fields & numbers](#fields--numbers) stops Pastee from finding a code's field, the search bar turns red and `Enter` says so instead of copying something else.
+
 ## Privacy
 
 - Items are stored with AES-256 encryption (Hive) in the app's data folder:
@@ -158,6 +169,7 @@ lib/
 ├── version.dart                 # Version string, set by the release build
 ├── model/
 │   ├── paste_item.dart          # Item model + Hive adapter
+│   ├── quick_code.dart          # Quick codes: matching and validation
 │   ├── app_settings.dart        # Preferences
 │   └── hotkey.dart              # Summon shortcut: presets, key codes, conflict checks
 ├── providers/
@@ -166,6 +178,7 @@ lib/
 │   ├── field_extractor.dart     # Field detection (passwords, links, codes, …)
 │   ├── masking.dart             # Turning secrets into dots
 │   ├── paste_titles.dart        # Generated titles
+│   ├── quick_codes.dart         # Finding the field a quick code copies
 │   ├── storage_service.dart     # Encrypted Hive storage + migration from 1.0
 │   ├── key_store.dart           # Encryption key file (DPAPI on Windows)
 │   ├── desktop_bridge.dart      # Dart side of the native shortcut/window bridge
