@@ -7,12 +7,12 @@ import '../model/app_settings.dart';
 import '../model/hotkey.dart';
 import '../providers/providers.dart';
 import '../services/app_lock.dart';
-import '../version.dart';
 import 'field_settings_dialog.dart';
 import 'key_cap.dart';
 import 'passcode_dialogs.dart';
 import 'shortcut_labels.dart';
 import 'theme.dart';
+import 'update_dialog.dart';
 
 Future<void> showSettingsDialog(BuildContext context) {
   return showDialog<void>(
@@ -559,9 +559,8 @@ class _SettingsDialogState extends ConsumerState<SettingsDialog> {
                         ),
                       ),
                     const SizedBox(height: 20),
-                    Text('Pastee $appVersion',
-                        style: theme.textTheme.bodySmall
-                            ?.copyWith(color: cs.onSurfaceVariant)),
+                    const _SectionTitle('Updates'),
+                    const UpdateSettings(),
                   ],
                 ),
               ),

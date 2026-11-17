@@ -56,3 +56,13 @@ Name: "{autostartup}\Pastee"; Filename: "{app}\pastee.exe"; Tasks: startup; Flag
 
 [Run]
 Filename: "{app}\pastee.exe"; Description: "{cm:LaunchProgram,Pastee}"; Flags: nowait postinstall skipifsilent
+; Pastee updates itself by running this setup with /SILENT /relaunch=1 and
+; quitting: start it again once the new files are in, as the user (not as
+; the administrator an all-users install asked for).
+Filename: "{app}\pastee.exe"; Flags: nowait runasoriginaluser skipifnotsilent; Check: RelaunchAfterUpdate
+
+[Code]
+function RelaunchAfterUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:relaunch|0}') = '1';
+end;

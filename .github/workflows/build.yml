@@ -20,6 +20,9 @@ concurrency:
 env:
   FLUTTER_VERSION: '3.47.9'
 
+# Pastee installs its own updates from these builds, so the third-party
+# action that sets up Flutter is pinned to a commit, not a movable tag.
+
 jobs:
   test:
     name: Analyze and test
@@ -29,7 +32,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
-      - uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
@@ -61,12 +64,14 @@ jobs:
       VERSION: ${{ needs.test.outputs.version }}
     steps:
       - uses: actions/checkout@v7
-      - uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
       - run: flutter pub get
+      # Also runs the update's finishing script under macOS's /bin/sh.
+      - run: flutter test
       - name: Build
         run: >
           flutter build macos --release
@@ -125,7 +130,7 @@ jobs:
       VERSION: ${{ needs.test.outputs.version }}
     steps:
       - uses: actions/checkout@v7
-      - uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
@@ -155,6 +160,64 @@ jobs:
           & $iscc "/DAppVersion=$env:VERSION" windows\installer\pastee.iss
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
           Get-ChildItem dist
+      # Pastee updates itself by quitting and running the new setup with
+      # exactly these switches (see windowsSetupScript in
+      # lib/services/update_installer.dart): no install-mode switch, so the
+      # setup updates the copy that's there instead of adding a second one,
+      # and /relaunch=1, so it starts Pastee again.
+      - name: Check the setup's silent update
+        run: |
+          $setup = (Resolve-Path "dist\Pastee-$env:VERSION-windows-x64-setup.exe").Path
+          $app = Join-Path $env:LOCALAPPDATA 'Programs\Pastee'
+          function Run-Setup([string[]]$switches, [string]$log) {
+            $process = Start-Process $setup -ArgumentList ($switches + "/LOG=$log") -PassThru
+            $null = $process.Handle
+            $process.WaitForExit()
+            if ($process.ExitCode -ne 0) { throw "setup exited with $($process.ExitCode)" }
+          }
+          # Inno Setup logs a [Run] entry only when it runs one.
+          function Started([string]$log) {
+            [bool](Select-String -Path $log -SimpleMatch -Pattern '-- Run entry --' -Quiet)
+          }
+          $update = @('/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CLOSEAPPLICATIONS', '/relaunch=1')
+
+          function Check-Update([string]$folder, [string]$log, [string]$elsewhere) {
+            Run-Setup $update $log
+            if (-not (Started $log)) {
+              Get-Content $log
+              throw "/relaunch=1 didn't start Pastee"
+            }
+            if (Test-Path "$elsewhere\pastee.exe") {
+              Get-Content $log
+              throw "the update installed a second copy in $elsewhere instead of updating $folder"
+            }
+            $running = $null
+            for ($i = 0; $i -lt 20 -and -not $running; $i++) {
+              Start-Sleep -Milliseconds 500
+              $running = Get-Process pastee -ErrorAction SilentlyContinue
+            }
+            if ($running) { Write-Host "Pastee started again: $($running.Path)" }
+            else { Write-Host "::warning::The setup started pastee.exe, but it wasn't running a moment later" }
+            Get-Process pastee -ErrorAction SilentlyContinue | Stop-Process -Force
+            $uninstall = Start-Process "$folder\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES' -PassThru
+            $uninstall.WaitForExit()
+            # The uninstaller hands over to a copy of itself and returns early.
+            for ($i = 0; $i -lt 60 -and (Test-Path "$folder\pastee.exe"); $i++) { Start-Sleep -Milliseconds 500 }
+            if (Test-Path "$folder\pastee.exe") { throw "Pastee wasn't uninstalled from $folder" }
+          }
+
+          # Installed for the current user, the default.
+          Run-Setup @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER') "$env:RUNNER_TEMP\install.log"
+          if (-not (Test-Path "$app\pastee.exe")) { throw "Pastee isn't in $app" }
+          if (-not (Test-Path "$app\unins000.exe")) { throw "no uninstaller next to pastee.exe" }
+          if (Started "$env:RUNNER_TEMP\install.log") { throw "a silent install without /relaunch=1 started Pastee" }
+          Check-Update $app "$env:RUNNER_TEMP\update.log" "$env:ProgramFiles\Pastee"
+
+          # Installed for all users, in a folder of its own choosing.
+          $shared = 'C:\PasteeTest'
+          Run-Setup @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/ALLUSERS', "/DIR=$shared") "$env:RUNNER_TEMP\install-all.log"
+          if (-not (Test-Path "$shared\pastee.exe")) { throw "Pastee isn't in $shared" }
+          Check-Update $shared "$env:RUNNER_TEMP\update-all.log" $app
       - uses: actions/upload-artifact@v7
         with:
           name: pastee-windows
@@ -188,7 +251,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang cmake ninja-build pkg-config libgtk-3-dev libstdc++-12-dev \
             libgl1-mesa-dri xvfb xauth xdotool dbus dpkg-dev
-      - uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         if: matrix.arch == 'x64'
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}

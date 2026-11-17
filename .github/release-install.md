@@ -1,6 +1,8 @@
 
 ## Install
 
+**Already running Pastee 1.4.0 or later?** It updates itself: click the update button in its header, or look in Settings → Updates.
+
 **macOS 12 or later** (Apple silicon and Intel): download `Pastee-*-macos.dmg`, open it and drag Pastee into Applications.
 This build isn't signed with an Apple Developer ID, so the first time you open it macOS says it can't check it for malware:
 
