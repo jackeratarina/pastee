@@ -10,6 +10,7 @@ class AppSettings {
     this.hideAfterCopy = true,
     this.maskSecrets = true,
     this.clearSecretsAfter = defaultClearSecretsAfter,
+    this.checkForUpdates = true,
   });
 
   static const defaultClearSecretsAfter = Duration(seconds: 30);
@@ -39,12 +40,16 @@ class AppSettings {
   /// null means it stays until something else is copied.
   final Duration? clearSecretsAfter;
 
+  /// Ask GitHub once a day whether there's a new release.
+  final bool checkForUpdates;
+
   AppSettings copyWith({
     ThemeMode? themeMode,
     HotKeySpec? Function()? summonHotKey,
     bool? hideAfterCopy,
     bool? maskSecrets,
     Duration? Function()? clearSecretsAfter,
+    bool? checkForUpdates,
   }) {
     return AppSettings(
       themeMode: themeMode ?? this.themeMode,
@@ -54,6 +59,7 @@ class AppSettings {
       clearSecretsAfter: clearSecretsAfter != null
           ? clearSecretsAfter()
           : this.clearSecretsAfter,
+      checkForUpdates: checkForUpdates ?? this.checkForUpdates,
     );
   }
 }

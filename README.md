@@ -32,6 +32,8 @@ The builds are not code-signed yet, so the first launch shows a warning:
 - **macOS:** open Pastee, click **Done** on the warning, then go to **System Settings → Privacy & Security** and click **Open Anyway**. (Or run `xattr -dr com.apple.quarantine /Applications/Pastee.app`.)
 - **Windows:** on "Windows protected your PC", click **More info → Run anyway**.
 
+From 1.4.0 on, Pastee checks for a new release once a day and updates itself in a click: see [Updates](#updates).
+
 ### Linux
 
 - **Summon shortcut on X11:** Pastee registers **Ctrl+Alt+V** itself, like on Windows, and tells you if another app already owns it.
@@ -56,7 +58,8 @@ The builds are not code-signed yet, so the first launch shows a warning:
 - **Inline title editing.** `⌘E` or double-click to rename. Titles are generated from the first line, with any password masked.
 - **Real-time search.** Start typing (or press `⌘F`) to filter by title or content.
 - **Copy flash.** A yellow highlight shows exactly what was copied, the whole item or a single field.
-- **Private and local.** Items are stored encrypted on your computer. Nothing leaves your machine.
+- **Updates in a click.** Pastee checks GitHub for a new release once a day. When there is one, a button in its header shows what's new and installs it: Pastee downloads the file for your system, checks its SHA-256, puts it in place and restarts. See [Updates](#updates).
+- **Private and local.** Items are stored encrypted on your computer and never leave it. The only thing Pastee sends over the internet is its daily update check, which you can turn off.
 - **Light, dark or system theme.**
 
 ## Keyboard shortcuts
@@ -124,6 +127,29 @@ Copy a password without looking for it: give its field a short code, then type t
 
 Each code belongs to one field, and each field has at most one code: right-click the chip again to change or remove it. Codes are saved with their note, encrypted, and go when the note is deleted. A code is a shortcut, not a password; App Lock is what keeps your notes private. If a change in [Fields & numbers](#fields--numbers) stops Pastee from finding a code's field, the search bar turns red and `Enter` says so instead of copying something else.
 
+## Updates
+
+Pastee 1.4.0 and later update themselves from this repository's [Releases](https://github.com/jackeratarina/pastee/releases).
+
+1. **Pastee checks.** Once a day, Pastee asks GitHub for the list of releases (a few seconds after it starts, if the last check is more than a day old). When a newer one is out, an update button appears in its header, next to Settings.
+2. **You choose.** Click it to read what's new in every release since yours, then **Update and restart**. **Later** keeps the button; **Skip this version** hides it until the next release (Settings → Updates still offers the skipped one).
+3. **Pastee updates.** It downloads the file for your system and checks its SHA-256 against both the checksum GitHub recorded when the file was uploaded and the release's `SHA256SUMS.txt`. If any of them differ, nothing is installed. Then it quits, the new version goes in, and Pastee starts again with your items and settings as they were. If the new version can't go in, the old one stays and says so when it starts.
+
+How the new version goes in depends on how you installed Pastee:
+
+| Installed from | What the update does |
+|---|---|
+| macOS DMG | Replaces Pastee.app where it is. Your account must be able to change that folder; in Applications, an administrator account can. Otherwise, and when Pastee runs from the disk image, the update dialog links to the download instead. |
+| Windows setup | Runs the new setup, which asks nothing, shows its progress and starts Pastee again. An install for all users asks for administrator rights; if the setup doesn't finish (you say no, say), the old Pastee starts again. |
+| Windows zip | Replaces Pastee's files in the folder you unpacked it to. Your other files there stay. |
+| Linux .deb | Installs the new package with apt. Your desktop asks for your password. |
+| Linux tarball | Replaces the `pastee` folder where you unpacked it. |
+
+- **Settings → Updates** shows your version and the last check, has **Check now**, and turns the daily check off.
+- The check is one request to `api.github.com`, without an account. GitHub sees your IP address and that it's Pastee (`User-Agent: Pastee/<version>`); nothing about you or your items is sent.
+- The checksums prove the download is the file published on this repository's release page. The builds aren't code-signed yet, so they can't prove who built it: an update is exactly as trustworthy as this GitHub repository.
+- Pastee 1.3.0 and earlier don't update themselves: install 1.4.0 once by hand. Builds made from source without a version (`PASTEE_VERSION`) don't check.
+
 ## Privacy
 
 - Items are stored with AES-256 encryption (Hive) in the app's data folder:
@@ -136,6 +162,7 @@ Each code belongs to one field, and each field has at most one code: right-click
 - Pastee 1.0 kept an unencrypted file in Documents (on macOS, inside its sandbox container). 1.1 moves those items into encrypted storage on first launch and deletes the old file. On macOS, the system may ask once whether Pastee can access data from other apps: that's the old container.
 - **App Lock** (Settings → App Lock) puts a passcode of 6 or more characters in front of Pastee, optionally with Touch ID (or your Mac password) or Windows Hello (not available on Linux). It locks when Pastee starts, and again after the time away or idle you pick, from "as soon as it's hidden" to "only when Pastee starts". When the summon shortcut hides Pastee, it draws the lock screen or a blank cover first, so taskbar, Alt+Tab and Exposé previews don't show your items. Pastee keeps only a salted PBKDF2 hash of the passcode, repeated wrong guesses add a wait that a restart doesn't reset, and loosening the lock or adding Touch ID needs the passcode. If you forget the passcode, the lock screen can erase your items and turn the lock off once you type ERASE; Pastee can't recover it. App Lock keeps people at your computer out of Pastee. Your items are already encrypted on disk.
 - Masking hides secrets on screen (screen sharing, someone looking over your shoulder).
+- **The update check** is the only time Pastee goes online: once a day it asks GitHub for its list of releases, and it downloads a release only when you click **Update and restart**. Turn the check off in Settings → Updates. See [Updates](#updates).
 - **Copying a secret** (a detected password, code or key, or anything from an item set to always hide) empties the clipboard again after 30 seconds, unless you copied something else since; pick the delay or Never in Settings → Privacy. On Windows those copies are kept out of clipboard history (Win+V) and cloud clipboard sync. On macOS they're marked as concealed, so clipboard managers that follow the convention skip them, and they aren't sent to your other devices through Universal Clipboard. On Linux they carry KDE's password-manager hint, which Klipper and clipboard managers that follow it skip. Anything else you copy is a normal clipboard entry.
 - Deleting or editing an item rewrites the storage file at once, so no copy of the old version stays on disk (1.1.0 and earlier kept one until enough deletions had piled up).
 - App Lock guards the window, not the files: it doesn't add encryption of its own. On macOS, something that can read your files as you can read Pastee's too. Turn on FileVault, and encrypt Time Machine backups, to protect them when the Mac is off or a backup is lost.
@@ -173,7 +200,8 @@ lib/
 │   ├── app_settings.dart        # Preferences
 │   └── hotkey.dart              # Summon shortcut: presets, key codes, conflict checks
 ├── providers/
-│   └── providers.dart           # Riverpod state: items, search, settings, shortcut
+│   ├── providers.dart           # Riverpod state: items, search, settings, shortcut
+│   └── update_provider.dart     # Daily update check, download, install
 ├── services/
 │   ├── field_extractor.dart     # Field detection (passwords, links, codes, …)
 │   ├── masking.dart             # Turning secrets into dots
@@ -183,11 +211,14 @@ lib/
 │   ├── key_store.dart           # Encryption key file (DPAPI on Windows)
 │   ├── desktop_bridge.dart      # Dart side of the native shortcut/window bridge
 │   ├── clipboard_service.dart   # Clipboard read/write
+│   ├── updates.dart             # GitHub releases, versions, checksums, download
+│   ├── update_installer.dart    # Putting an update in place, per install kind
 │   └── text_utils.dart          # Emoji-safe truncation
 └── ui/
     ├── home_screen.dart         # Main screen, keyboard handling
     ├── paste_tile.dart          # Item tile, field chips, masking, flash animation
-    ├── settings_dialog.dart     # Shortcut picker and recorder, privacy, theme
+    ├── settings_dialog.dart     # Shortcut picker and recorder, privacy, theme, updates
+    ├── update_dialog.dart       # What's new, Update and restart
     └── …
 macos/Runner/MainFlutterWindow.swift   # Global shortcut (Carbon) and show/hide
 windows/runner/flutter_window.cpp      # Global shortcut (RegisterHotKey) and show/hide

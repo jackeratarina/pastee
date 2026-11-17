@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'providers/providers.dart';
+import 'providers/update_provider.dart';
 import 'services/storage_service.dart';
 import 'ui/home_screen.dart';
 import 'ui/lock_screen.dart';
@@ -40,6 +41,9 @@ class PasteeApp extends ConsumerWidget {
     // app starts, whether or not it is locked.
     ref.watch(hotKeyProvider);
     ref.watch(windowControllerProvider);
+    // Starts the daily update check (the notifier only, so download
+    // progress doesn't rebuild the app).
+    ref.watch(updateProvider.notifier);
 
     return MaterialApp(
       title: 'Pastee',

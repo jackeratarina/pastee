@@ -14,6 +14,11 @@ import 'package:pastee/services/device_auth.dart';
 import 'package:pastee/services/passcode.dart';
 import 'package:pastee/services/paste_titles.dart';
 import 'package:pastee/services/storage_service.dart';
+import 'package:pastee/services/updates.dart';
+import 'package:pastee/providers/update_provider.dart';
+import 'package:pastee/ui/update_dialog.dart';
+
+import 'update_fakes.dart';
 
 class FakeClipboard extends ClipboardService {
   FakeClipboard([this.text]);
@@ -167,17 +172,30 @@ class TestApp {
     FakeClipboard? clipboard,
     FakeBridge? bridge,
     FakeAuthenticator? authenticator,
+    this.version,
+    FakeReleaseSource? releases,
+    FakeInstaller? installer,
   })  : store = MemoryPasteStore(items),
         settingsStore = MemorySettingsStore(settings),
         clipboard = clipboard ?? FakeClipboard(),
         bridge = bridge ?? FakeBridge(),
-        authenticator = authenticator ?? FakeAuthenticator(available: false);
+        authenticator = authenticator ?? FakeAuthenticator(available: false),
+        releases = releases ?? FakeReleaseSource(),
+        installer = installer ?? FakeInstaller();
 
   final MemoryPasteStore store;
   final MemorySettingsStore settingsStore;
   final FakeClipboard clipboard;
   final FakeBridge bridge;
   final FakeAuthenticator authenticator;
+
+  /// The version Pastee says it is; null is a development build, which
+  /// never checks for updates.
+  final String? version;
+  final FakeReleaseSource releases;
+  final FakeInstaller installer;
+  int quitCalls = 0;
+  final openedUrls = <Uri>[];
   late ProviderContainer container;
 
   Future<void> pump(WidgetTester tester) async {
@@ -194,6 +212,14 @@ class TestApp {
           passcodeIterationsProvider.overrideWithValue(testIterations),
           storageReportProvider.overrideWithValue(const StorageReport(
               dataPath: '/tmp/pastee-test', encrypted: true)),
+          runningVersionProvider.overrideWithValue(Version.tryParse(version)),
+          releaseSourceProvider.overrideWithValue(releases),
+          updateInstallerProvider.overrideWithValue(installer),
+          quitForUpdateProvider.overrideWithValue(() async => quitCalls++),
+          openUrlProvider.overrideWithValue((url) async {
+            openedUrls.add(url);
+            return true;
+          }),
         ],
         child: const PasteeApp(),
       ),

@@ -9,6 +9,7 @@ import '../model/paste_item.dart';
 import '../model/quick_code.dart';
 import '../providers/field_config_provider.dart';
 import '../providers/providers.dart';
+import '../providers/update_provider.dart';
 import '../services/clipboard_service.dart';
 import '../services/field_extractor.dart';
 import '../services/paste_titles.dart';
@@ -20,6 +21,7 @@ import 'quick_code_dialog.dart';
 import 'settings_dialog.dart';
 import 'shortcut_labels.dart';
 import 'theme.dart';
+import 'update_dialog.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -57,6 +59,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   late final AppLifecycleListener _lifecycle;
   AppLifecycleState? _lastLifecycleState;
   bool _settingsOpen = false;
+  bool _updateOpen = false;
 
   @override
   void initState() {
@@ -183,6 +186,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     _settingsOpen = true;
     await showSettingsDialog(context);
     _settingsOpen = false;
+    _restoreFocus();
+  }
+
+  Future<void> _openUpdate() async {
+    if (_updateOpen || !mounted) return;
+    _updateOpen = true;
+    await showUpdateDialog(context);
+    _updateOpen = false;
     _restoreFocus();
   }
 
@@ -614,15 +625,47 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           'Moved $n ${n == 1 ? 'item' : 'items'} into encrypted storage',
           duration: const Duration(seconds: 4));
     }
+    // Queued after any storage notice.
+    _showUpdateNotice();
   }
 
+  /// After a restart from an update: whether it worked.
+  void _showUpdateNotice() {
+    final notice = ref.read(updateProvider).notice;
+    if (notice == null) return;
+    ref.read(updateProvider.notifier).clearNotice();
+    final page = notice.page;
+    if (notice.installed) {
+      _showSnackBar(
+        queue: true,
+        'Updated to Pastee ${notice.version}',
+        duration: const Duration(seconds: 6),
+        action: page == null
+            ? null
+            : SnackBarAction(
+                label: 'What’s new',
+                onPressed: () => ref.read(openUrlProvider)(page)),
+      );
+    } else {
+      _showSnackBar(
+        queue: true,
+        'Pastee couldn’t finish updating to ${notice.version}, so this is '
+        'still ${ref.read(updateProvider).current}. Try again in Settings.',
+        duration: const Duration(seconds: 10),
+        action: SnackBarAction(label: 'Settings', onPressed: _openSettings),
+      );
+    }
+  }
+
+  /// Shows [message], replacing whatever message is showing, or after it
+  /// with [queue].
   void _showSnackBar(String message,
-      {Duration? duration, SnackBarAction? action}) {
+      {Duration? duration, SnackBarAction? action, bool queue = false}) {
     if (!mounted) return;
     final messenger = ScaffoldMessenger.of(context);
     final available = MediaQuery.sizeOf(context).width - 32;
     final wanted = message.length > 44 || action != null ? 440.0 : 300.0;
-    messenger.clearSnackBars();
+    if (!queue) messenger.clearSnackBars();
     messenger.showSnackBar(
       SnackBar(
         content: Text(message),
@@ -868,6 +911,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ref.watch(settingsProvider.select((s) => s.maskSecrets));
     final isDark = theme.brightness == Brightness.dark;
     final spec = hotKey.spec;
+    final offeredUpdate = ref.watch(updateProvider
+        .select((update) => update.offered ? update.latest!.version : null));
 
     return Container(
       padding: const EdgeInsets.fromLTRB(20, 14, 10, 10),
@@ -951,6 +996,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               icon: Icons.lock_outline,
               tooltip: 'Lock Pastee (${primaryShortcut('L')})',
               onTap: _lockNow,
+            ),
+          if (offeredUpdate != null)
+            _HeaderButton(
+              key: const ValueKey('updateButton'),
+              icon: Icons.system_update_alt_rounded,
+              tooltip: 'Pastee $offeredUpdate is available. Click to update.',
+              color: colorScheme.primary,
+              onTap: _openUpdate,
             ),
           _HeaderButton(
             icon: Icons.settings_outlined,
@@ -1123,6 +1176,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
 class _HeaderButton extends StatelessWidget {
   const _HeaderButton({
+    super.key,
     required this.icon,
     required this.tooltip,
     required this.onTap,

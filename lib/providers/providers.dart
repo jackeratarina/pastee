@@ -77,6 +77,7 @@ class SettingsNotifier extends StateNotifier<AppSettings> {
   static const _kHideAfterCopy = 'hideAfterCopy';
   static const _kMaskSecrets = 'maskSecrets';
   static const _kClearSecretsAfter = 'clearSecretsAfterSeconds';
+  static const _kCheckForUpdates = 'checkForUpdates';
 
   static AppSettings _load(SettingsStore store) {
     final theme = store.read(_kTheme);
@@ -102,6 +103,7 @@ class SettingsNotifier extends StateNotifier<AppSettings> {
           : AppSettings.clearSecretsChoices.firstWhere(
               (d) => d.inSeconds == clearSeconds,
               orElse: () => AppSettings.defaultClearSecretsAfter),
+      checkForUpdates: store.read(_kCheckForUpdates) as bool? ?? true,
     );
   }
 
@@ -130,6 +132,11 @@ class SettingsNotifier extends StateNotifier<AppSettings> {
   Future<void> setClearSecretsAfter(Duration? delay) async {
     state = state.copyWith(clearSecretsAfter: () => delay);
     await _store.write(_kClearSecretsAfter, delay?.inSeconds ?? 0);
+  }
+
+  Future<void> setCheckForUpdates(bool value) async {
+    state = state.copyWith(checkForUpdates: value);
+    await _store.write(_kCheckForUpdates, value);
   }
 }
 
