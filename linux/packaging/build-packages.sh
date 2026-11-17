@@ -83,6 +83,9 @@ if [[ "$depends" != *libgtk-3-0* ]]; then
   echo "unexpected dependencies: $depends" >&2
   exit 1
 fi
+# Flutter loads EGL and OpenGL ES at run time, so dpkg-shlibdeps can't see
+# them; without them Pastee quits as soon as it starts.
+depends="$depends, libegl1, libgles2"
 
 find "$root" -type d -exec chmod 755 {} +
 installed_size=$(du -sk --apparent-size --exclude=DEBIAN "$root" | cut -f1)
