@@ -5,6 +5,10 @@
 ### New
 - **Quick codes.** Right-click a field chip (or press and hold it) to give the field a short code, like `st2` for the password of your "silvertiger" note. One character is enough. Type the code in the search bar: the bar turns green and the note comes to the top with that field outlined, even though the code appears nowhere in it. Press **Enter** to copy the field. Pastee then hides and hands focus back to the app you were in, ready to paste. A copied password gets the usual secret treatment: it stays out of clipboard history and clears itself. Codes are unique, ignore capitals, show in green on their chip, and are saved encrypted with their note.
 
+### Fixed
+- Typing while the list has focus no longer drops the first character: typing `st2` searched for `t2`.
+- On Linux, Enter and Esc work every time you summon Pastee. After Pastee hid itself on one of those keys, the next press of that key was ignored and could take the focus out of the search box.
+
 ## 1.2.0 — 2026-11-15
 
 ### New

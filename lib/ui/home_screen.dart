@@ -117,7 +117,43 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   void _hideWindow() {
     _hideRevealed();
-    ref.read(windowControllerProvider).hide();
+    _whenKeysReleased(() {
+      if (mounted) ref.read(windowControllerProvider).hide();
+    });
+  }
+
+  /// Runs [action] once no key is held down, or after [timeout] at most.
+  ///
+  /// Hiding Pastee while a key is down hands the focus to another app before
+  /// the key goes up. Linux then never tells Pastee that the key was released
+  /// and takes its next press for a held-down repeat, so Enter or Esc did
+  /// nothing the next time Pastee was summoned.
+  void _whenKeysReleased(VoidCallback action,
+      {Duration timeout = const Duration(milliseconds: 600)}) {
+    final keyboard = HardwareKeyboard.instance;
+    if (keyboard.physicalKeysPressed.isEmpty) {
+      action();
+      return;
+    }
+    var done = false;
+    late final KeyEventCallback handler;
+    late final Timer fallback;
+    void finish() {
+      if (done) return;
+      done = true;
+      fallback.cancel();
+      keyboard.removeHandler(handler);
+      action();
+    }
+
+    handler = (event) {
+      if (event is KeyUpEvent && keyboard.physicalKeysPressed.isEmpty) {
+        scheduleMicrotask(finish);
+      }
+      return false;
+    };
+    keyboard.addHandler(handler);
+    fallback = Timer(timeout, finish);
   }
 
   /// After copying from a summoned Pastee, get out of the way so the next
@@ -253,14 +289,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   /// Typing while the list has focus starts a search.
   void _typeIntoSearch(String character) {
-    final text = _searchController.text + character;
-    _searchController.value = TextEditingValue(
-      text: text,
-      selection: TextSelection.collapsed(offset: text.length),
-    );
+    void type() {
+      if (!mounted) return;
+      final text = _searchController.text + character;
+      _searchController.value = TextEditingValue(
+        text: text,
+        selection: TextSelection.collapsed(offset: text.length),
+      );
+      _onSearchChanged(text);
+      setState(() {});
+    }
+
+    // A desktop text field selects all its text when it gains focus, so the
+    // next key would replace this one: "st2" came out as "t2". The focus
+    // moves in a microtask; add the character right after it.
     _searchFocusNode.requestFocus();
-    _onSearchChanged(text);
-    setState(() {});
+    scheduleMicrotask(type);
   }
 
   Future<void> _pasteFromClipboard() async {
@@ -995,6 +1039,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           _onSearchChanged(query);
           setState(() {});
         },
+        // Enter is handled by the key handler above. One that still reaches
+        // the field (a held-down repeat) must not take the focus out of it,
+        // which is what a text field does by default.
+        onEditingComplete: () {},
         style: theme.textTheme.bodyMedium?.copyWith(
           color: codeColor ?? colorScheme.onSurface,
           fontWeight: codeColor == null ? null : FontWeight.w600,

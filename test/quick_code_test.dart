@@ -42,6 +42,28 @@ Future<void> typeInSearch(WidgetTester tester, String text) async {
   await tester.pump(const Duration(milliseconds: 300));
 }
 
+const desktop = TargetPlatformVariant(
+    {TargetPlatform.macOS, TargetPlatform.windows, TargetPlatform.linux});
+
+/// Types [chars] the way the keyboard's text input does once the search box
+/// has focus: it starts from the last text and selection the app sent it,
+/// and each character replaces what is selected.
+Future<void> imeTypes(WidgetTester tester, String chars) async {
+  final state = tester.testTextInput.editingState!;
+  var text = state['text'] as String;
+  final base = state['selectionBase'] as int;
+  final extent = state['selectionExtent'] as int;
+  var from = base < extent ? base : extent;
+  var to = base < extent ? extent : base;
+  for (final char in chars.split('')) {
+    text = text.replaceRange(from, to, char);
+    from = to = from + 1;
+    tester.testTextInput.updateEditingValue(TextEditingValue(
+        text: text, selection: TextSelection.collapsed(offset: from)));
+    await tester.pump();
+  }
+}
+
 Future<void> pressEnter(WidgetTester tester) async {
   await tester.sendKeyEvent(LogicalKeyboardKey.enter);
   await tester.pump();
@@ -260,6 +282,81 @@ void main() {
       expect(app.bridge.hideCalls, 1, reason: 'back to the previous app');
       expect(tester.widget<TextField>(searchField).controller!.text, isEmpty);
       await tester.pump(const Duration(seconds: 2));
+    });
+
+    testWidgets('a code typed straight into the list keeps every character',
+        (tester) async {
+      final app = TestApp(items: [
+        withCodes(makeItem(note, id: 'tiger'), [codeForPassword('st2')]),
+      ]);
+      await app.pump(tester);
+
+      // The first key reaches the list, which moves it into the search box;
+      // the rest arrive through the keyboard's text input. Desktop text
+      // fields select all their text when they gain focus, which used to
+      // make the second key replace the first: "st2" became "t2".
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyS, character: 's');
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyS);
+      await tester.pump();
+      final controller = tester.widget<TextField>(searchField).controller!;
+      expect(controller.value.text, 's');
+      expect(controller.selection, const TextSelection.collapsed(offset: 1));
+
+      await imeTypes(tester, 't2');
+      expect(controller.text, 'st2');
+      expect(find.byIcon(Icons.key_rounded), findsOneWidget);
+      await pressEnter(tester);
+      await tester.pump();
+      expect(app.clipboard.text, 'hunter2!');
+      await tester.pump(const Duration(seconds: 2));
+    }, variant: desktop);
+
+    testWidgets('Pastee hides only once the key is released', (tester) async {
+      // Hiding on the key press gives the focus away before the key goes up.
+      // Linux then never reports the release, and the next Enter or Esc
+      // arrived as a repeat and did nothing.
+      final app = TestApp(items: [
+        withCodes(makeItem(note, id: 'tiger'), [codeForPassword('st2')]),
+      ]);
+      await app.pump(tester);
+      app.bridge.summon(shown: true);
+      await tester.pump();
+
+      await tester.enterText(searchField, 'st2');
+      await tester.pump();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(app.clipboard.text, 'hunter2!');
+      expect(app.bridge.hideCalls, 0, reason: 'Enter is still down');
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(app.bridge.hideCalls, 1);
+
+      // Esc in the list, held for longer than Pastee waits.
+      app.bridge.summon(shown: true);
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape); // leaves the box
+      await tester.pump();
+      expect(app.bridge.hideCalls, 1);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      expect(app.bridge.hideCalls, 1, reason: 'Esc is still down');
+      await tester.pump(const Duration(milliseconds: 700));
+      expect(app.bridge.hideCalls, 2, reason: 'never waits forever');
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.escape);
+      await tester.pump(const Duration(seconds: 2));
+    });
+
+    testWidgets('an Enter that reaches the search box keeps it focused',
+        (tester) async {
+      final app = TestApp(items: [makeItem(note, id: 'tiger')]);
+      await app.pump(tester);
+      await tester.tap(searchField);
+      await tester.pump();
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+      expect(FocusManager.instance.primaryFocus?.debugLabel, 'search');
+      expect(app.items, hasLength(1));
     });
 
     testWidgets('it hides Pastee even when opened from the Dock or taskbar',
