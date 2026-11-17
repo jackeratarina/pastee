@@ -47,7 +47,10 @@ void main() {
     ]);
     await app.pump(tester);
     expect(find.textContaining('Dr. Smith'), findsNothing);
-    expect(find.byTooltip('⌘1  Field (hidden)'), findsOneWidget);
+    expect(
+        find.byTooltip(
+            '⌘1  Field (hidden)\nRight-click to give it a quick code'),
+        findsOneWidget);
     await pressShortcut(tester, LogicalKeyboardKey.digit1);
     await tester.pump();
     expect(find.text('Copied Field'), findsOneWidget);

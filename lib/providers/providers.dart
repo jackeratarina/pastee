@@ -9,6 +9,7 @@ import '../model/app_settings.dart';
 import '../model/field_config.dart';
 import '../model/hotkey.dart';
 import '../model/paste_item.dart';
+import '../model/quick_code.dart';
 import '../services/app_lock.dart';
 import '../services/clipboard_service.dart';
 import '../services/desktop_bridge.dart';
@@ -278,7 +279,7 @@ final filteredPasteListProvider = Provider<List<PasteItem>>((ref) {
   final query = ref.watch(searchQueryProvider).toLowerCase().trim();
   if (query.isEmpty) return items;
 
-  return items.where((item) {
+  final matches = items.where((item) {
     return item.title.toLowerCase().contains(query) ||
         item.content.toLowerCase().contains(query);
   }).toList()
@@ -289,6 +290,43 @@ final filteredPasteListProvider = Provider<List<PasteItem>>((ref) {
       if (!aTitle && bTitle) return 1;
       return b.createdAt.compareTo(a.createdAt);
     });
+
+  // A quick code brings its note to the top, even when the code appears
+  // nowhere in the note.
+  final hit = ref.watch(quickCodeMatchProvider);
+  if (hit == null) return matches;
+  return [hit.item, ...matches.where((item) => item.id != hit.item.id)];
+});
+
+// ── quick codes ──────────────────────────────────────────────────────────
+
+/// A quick code and the item it belongs to.
+@immutable
+class QuickCodeHit {
+  const QuickCodeHit(this.item, this.code);
+
+  final PasteItem item;
+  final QuickCode code;
+}
+
+/// Every quick code, by [QuickCode.key].
+final quickCodeIndexProvider = Provider<Map<String, QuickCodeHit>>((ref) {
+  final index = <String, QuickCodeHit>{};
+  // Codes are unique, but if a damaged file ever had one twice, the newest
+  // item (the list is newest first) consistently wins.
+  for (final item in ref.watch(pasteListProvider)) {
+    for (final code in item.quickCodes) {
+      index.putIfAbsent(code.key, () => QuickCodeHit(item, code));
+    }
+  }
+  return index;
+});
+
+/// The quick code that the search is, exactly (ignoring case), if any.
+final quickCodeMatchProvider = Provider<QuickCodeHit?>((ref) {
+  final query = QuickCode.normalize(ref.watch(searchQueryProvider));
+  if (query.isEmpty) return null;
+  return ref.watch(quickCodeIndexProvider)[query];
 });
 
 class PasteListNotifier extends StateNotifier<List<PasteItem>> {
@@ -362,6 +400,46 @@ class PasteListNotifier extends StateNotifier<List<PasteItem>> {
   Future<void> setSensitive(String id, bool sensitive) =>
       _update(id, (item) => item.copyWith(sensitive: sensitive));
 
+  /// The item and code that [code] (in any case) already belongs to.
+  QuickCodeHit? findQuickCode(String code) {
+    final key = QuickCode.normalize(code);
+    for (final item in state) {
+      for (final existing in item.quickCodes) {
+        if (existing.key == key) return QuickCodeHit(item, existing);
+      }
+    }
+    return null;
+  }
+
+  /// Gives one field of item [id] the quick code [code], or takes its code
+  /// away when [code] is null. [replacing] are the field's current codes.
+  ///
+  /// A code belongs to one field only, so a code that another field already
+  /// has is refused: check [findQuickCode] first.
+  Future<void> setQuickCode(String id,
+      {required List<QuickCode> replacing, QuickCode? code}) async {
+    if (code != null) {
+      final problem = QuickCode.problemWith(code.code);
+      if (problem != null) {
+        throw ArgumentError.value(code.code, 'code', problem);
+      }
+      final owner = findQuickCode(code.code);
+      if (owner != null &&
+          !(owner.item.id == id && replacing.contains(owner.code))) {
+        throw StateError('“${code.code}” is already a quick code');
+      }
+    }
+    await _update(
+        id,
+        (item) => item.copyWith(quickCodes: [
+              for (final existing in item.quickCodes)
+                if (!replacing.contains(existing) &&
+                    !(code != null && existing.hasSpan(code.start, code.end)))
+                  existing,
+              if (code != null) code,
+            ]));
+  }
+
   Future<void> _update(String id, PasteItem Function(PasteItem) change) async {
     final current = state.where((item) => item.id == id).firstOrNull;
     if (current == null) return;
@@ -389,8 +467,13 @@ class PasteListNotifier extends StateNotifier<List<PasteItem>> {
   /// ordered by date). Returns it, or null if there is nothing to undo.
   Future<PasteItem?> undoDelete() async {
     if (_deleted.isEmpty) return null;
-    final item = _deleted.removeLast();
-    if (state.any((existing) => existing.id == item.id)) return item;
+    final deleted = _deleted.removeLast();
+    if (state.any((existing) => existing.id == deleted.id)) return deleted;
+    // A quick code given to another field since the delete stays there.
+    final item = deleted.copyWith(quickCodes: [
+      for (final code in deleted.quickCodes)
+        if (findQuickCode(code.code) == null) code,
+    ]);
     await _store.put(item);
     state = [...state, item]
       ..sort((a, b) => b.createdAt.compareTo(a.createdAt));

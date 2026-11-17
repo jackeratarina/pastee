@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../model/paste_item.dart';
+import '../model/quick_code.dart';
 import '../services/field_extractor.dart';
 import '../services/masking.dart';
 import '../services/paste_titles.dart';
+import '../services/quick_codes.dart';
 import '../services/text_utils.dart';
 import 'shortcut_labels.dart';
 import 'theme.dart';
@@ -58,6 +60,8 @@ class PasteTile extends StatefulWidget {
     required this.onToggleReveal,
     required this.onToggleSensitive,
     this.onEditingChanged,
+    this.onFieldQuickCode,
+    this.quickCodeMatch,
   });
 
   final PasteItem item;
@@ -82,6 +86,13 @@ class PasteTile extends StatefulWidget {
   final VoidCallback onToggleReveal;
   final VoidCallback onToggleSensitive;
   final ValueChanged<bool>? onEditingChanged;
+
+  /// Right-click (or long press) on a field chip: set its quick code.
+  final void Function(int fieldIndex)? onFieldQuickCode;
+
+  /// The quick code typed in the search bar, when it is one of this item's:
+  /// its field is marked.
+  final QuickCode? quickCodeMatch;
 
   /// Whether this item is currently drawn with its secrets hidden.
   bool get hidden =>
@@ -463,6 +474,15 @@ class _PasteTileState extends State<PasteTile>
 
   Widget _buildFieldChips(
       List<ExtractedField> fields, ColorScheme colorScheme, bool hidden) {
+    final codes = widget.item.quickCodes;
+    final codesOfField = [
+      for (var i = 0; i < fields.length; i++)
+        codes.isEmpty
+            ? const <QuickCode>[]
+            : quickCodesOfField(codes, widget.extraction, i),
+    ];
+    final match = widget.quickCodeMatch;
+    final onQuickCode = widget.onFieldQuickCode;
     return AnimatedBuilder(
       animation: _flashController,
       builder: (context, _) {
@@ -477,10 +497,15 @@ class _PasteTileState extends State<PasteTile>
                 text: _chipText(fields[i], hidden),
                 masked: _chipMasked(fields[i], hidden),
                 colorScheme: colorScheme,
-                tooltip: _chipTooltip(fields[i], hidden),
+                tooltip: _chipTooltip(
+                    fields[i], hidden, codesOfField[i].firstOrNull),
                 flashOpacity:
                     _activeFlashField == i ? _flashOpacity.value : 0.0,
+                quickCode: codesOfField[i].firstOrNull?.code,
+                highlighted: match != null && codesOfField[i].contains(match),
                 onTap: () => widget.onFieldCopy(fields[i].value, i),
+                onSecondaryTap:
+                    onQuickCode == null ? null : () => onQuickCode(i),
               ),
           ],
         );
@@ -505,12 +530,15 @@ class _PasteTileState extends State<PasteTile>
     return visibleChipText(field, _visibleValue(field, hidden));
   }
 
-  String _chipTooltip(ExtractedField field, bool hidden) {
+  String _chipTooltip(ExtractedField field, bool hidden, QuickCode? code) {
     final keys = primaryShortcut('${field.number}');
-    if (_chipMasked(field, hidden)) {
-      return '$keys  ${_label(field, hidden)} (hidden)';
-    }
-    return '$keys  ${field.label}: ${truncateGraphemes(_visibleValue(field, hidden), 80)}';
+    final about = _chipMasked(field, hidden)
+        ? '$keys  ${_label(field, hidden)} (hidden)'
+        : '$keys  ${field.label}: ${truncateGraphemes(_visibleValue(field, hidden), 80)}';
+    if (widget.onFieldQuickCode == null) return about;
+    return code == null
+        ? '$about\nRight-click to give it a quick code'
+        : '$about\nQuick code: ${code.code} (right-click to change it)';
   }
 
   /// A non-secret field can still contain a secret, like a database URL with
@@ -551,6 +579,9 @@ class FieldChip extends StatelessWidget {
     required this.tooltip,
     this.flashOpacity = 0.0,
     required this.onTap,
+    this.quickCode,
+    this.highlighted = false,
+    this.onSecondaryTap,
   });
 
   final int number;
@@ -561,6 +592,15 @@ class FieldChip extends StatelessWidget {
   final String tooltip;
   final double flashOpacity;
   final VoidCallback? onTap;
+
+  /// Shown in green after the value.
+  final String? quickCode;
+
+  /// The quick code in the search bar copies this field: a green outline.
+  final bool highlighted;
+
+  /// Right-click or long press.
+  final VoidCallback? onSecondaryTap;
 
   @override
   Widget build(BuildContext context) {
@@ -573,6 +613,8 @@ class FieldChip extends StatelessWidget {
     final fg = masked
         ? colorScheme.onTertiaryContainer
         : colorScheme.onSecondaryContainer;
+    final green = AppTheme.quickCode(colorScheme);
+    final code = quickCode;
 
     return Tooltip(
       message: tooltip,
@@ -582,15 +624,24 @@ class FieldChip extends StatelessWidget {
           borderRadius: BorderRadius.circular(6),
           canRequestFocus: false,
           onTap: onTap,
+          onSecondaryTap: onSecondaryTap,
+          onLongPress: onSecondaryTap,
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+            // The thicker outline takes its extra width from the padding, so
+            // a marked chip doesn't push its neighbours around.
+            padding: EdgeInsets.symmetric(
+                horizontal: highlighted ? 5.5 : 6,
+                vertical: highlighted ? 2.5 : 3),
             decoration: BoxDecoration(
               color: bgColor,
               borderRadius: BorderRadius.circular(6),
               border: Border.all(
                 color: flashOpacity > 0
                     ? Colors.yellow.withValues(alpha: 0.6)
-                    : colorScheme.outlineVariant.withValues(alpha: 0.25),
+                    : highlighted
+                        ? green
+                        : colorScheme.outlineVariant.withValues(alpha: 0.25),
+                width: highlighted ? 1.5 : 1,
               ),
             ),
             child: Row(
@@ -631,6 +682,29 @@ class FieldChip extends StatelessWidget {
                     ),
                   ),
                 ),
+                if (code != null) ...[
+                  const SizedBox(width: 5),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: green.withValues(alpha: 0.14),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      truncateGraphemes(code, 12),
+                      maxLines: 1,
+                      style: TextStyle(
+                        fontSize: 10,
+                        height: 1.2,
+                        color: green,
+                        fontWeight: FontWeight.w700,
+                        fontFamily: AppTheme.monoFont,
+                        fontFamilyFallback: AppTheme.monoFallback,
+                      ),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),

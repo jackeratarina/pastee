@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:hive/hive.dart';
 import 'package:path/path.dart' as p;
 import 'package:pastee/model/paste_item.dart';
+import 'package:pastee/model/quick_code.dart';
 import 'package:pastee/services/key_store.dart';
 import 'package:pastee/services/storage_service.dart';
 import 'package:pastee/services/text_utils.dart';
@@ -144,6 +145,22 @@ void main() {
     expect(upgraded.title, contains('�'));
     expect(upgraded.title.codeUnits.where((u) => u >= 0xD800 && u <= 0xDFFF),
         isEmpty);
+  });
+
+  test('quick codes survive a restart; items without codes have none',
+      () async {
+    var storage = await Storage.open(dataDir: dataDir, keyStore: keyStore());
+    const code = QuickCode(code: 'st2', start: 10, end: 18);
+    await storage.pastes
+        .put(item('1', 'password: hunter2!').copyWith(quickCodes: [code]));
+    await storage.pastes.put(item('2', 'no codes here'));
+    await Hive.close();
+
+    storage = await Storage.open(dataDir: dataDir, keyStore: keyStore());
+    final items = {for (final i in storage.pastes.getAll()) i.id: i};
+    expect(items['1']!.quickCodes, [code]);
+    expect(items['1']!.content, 'password: hunter2!');
+    expect(items['2']!.quickCodes, isEmpty);
   });
 
   test('older records without the sensitive flag still load', () async {
